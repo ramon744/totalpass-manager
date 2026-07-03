@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient, createServiceClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
+import { getServiceOrUserClient } from "@/lib/supabase/service-or-user";
 import { renderTemplate } from "@/lib/uazapi/client";
 import { TEMPLATE_SAMPLE_VARS } from "@/lib/message-templates";
 import { buildTemplateVarsForBeneficiario } from "@/lib/services/template-vars";
@@ -21,15 +22,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Template obrigatório" }, { status: 400 });
   }
 
-  const serviceClient = process.env.SUPABASE_SERVICE_ROLE_KEY
-    ? await createServiceClient()
-    : supabase;
+  const serviceClient = await getServiceOrUserClient();
 
-  const { data: template } = await serviceClient
+  const { data: template, error: templateError } = await serviceClient
     .from("mensagem_templates")
     .select("*")
     .eq("id", templateId)
-    .single();
+    .maybeSingle();
+
+  if (templateError) {
+    return NextResponse.json({ error: templateError.message }, { status: 400 });
+  }
 
   if (!template) {
     return NextResponse.json({ error: "Template não encontrado" }, { status: 404 });

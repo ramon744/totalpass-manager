@@ -166,10 +166,10 @@ export function MensagensPanel({
   const previewTemplate = useMemo(() => {
     if (testTemplateId && livePreview) return livePreview;
     if (!testTemplateId) return "";
-    const template = templates.find((t) => t.id === testTemplateId);
+    const template = editedTemplates.find((t) => t.id === testTemplateId);
     if (!template) return "";
     return renderTemplatePreview(template.corpo);
-  }, [testTemplateId, templates, livePreview]);
+  }, [testTemplateId, editedTemplates, livePreview]);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -232,8 +232,13 @@ export function MensagensPanel({
           setTestPhone(maskPhoneInput(data.telefone));
         }
       })
-      .catch(() => {
-        if (!cancelled) setLivePreview("");
+      .catch((e) => {
+        if (!cancelled) {
+          setLivePreview("");
+          toast.error(
+            e instanceof Error ? e.message : "Erro ao carregar prévia do template"
+          );
+        }
       })
       .finally(() => {
         if (!cancelled) setPreviewLoading(false);
@@ -295,22 +300,33 @@ export function MensagensPanel({
   }
 
   async function saveTemplate(template: MensagemTemplate) {
-    const supabase = (await import("@/lib/supabase/client")).createClient();
-    const { error } = await supabase
-      .from("mensagem_templates")
-      .update({
-        corpo: template.corpo,
-        titulo: template.titulo,
-        ativo: template.ativo,
-        tipo_envio: template.tipo_envio,
-        max_tentativas: template.max_tentativas,
-        intervalo_retry_minutos: template.intervalo_retry_minutos,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", template.id);
+    try {
+      const res = await fetch(`/api/messages/templates/${template.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          corpo: template.corpo,
+          titulo: template.titulo,
+          ativo: template.ativo,
+          tipo_envio: template.tipo_envio,
+          max_tentativas: template.max_tentativas,
+          intervalo_retry_minutos: template.intervalo_retry_minutos,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Erro ao salvar template");
 
-    if (error) toast.error(error.message);
-    else toast.success("Template salvo");
+      if (data.template) {
+        setEditedTemplates((prev) =>
+          prev.map((item) => (item.id === data.template.id ? data.template : item))
+        );
+      }
+
+      toast.success("Template salvo");
+      router.refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao salvar template");
+    }
   }
 
   return (
@@ -405,9 +421,10 @@ export function MensagensPanel({
                 }}
               >
                 <option value="">Mensagem personalizada</option>
-                {templates.map((t) => (
+                {editedTemplates.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.titulo}
+                    {!t.ativo ? " (inativo)" : ""}
                   </option>
                 ))}
               </select>

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient, createServiceClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
+import { getServiceOrUserClient } from "@/lib/supabase/service-or-user";
 import { getUazapiConfig } from "@/lib/config";
 import { createLog } from "@/lib/logger";
 import { UazapiClient, renderTemplate } from "@/lib/uazapi/client";
@@ -26,9 +27,7 @@ export async function POST(request: NextRequest) {
   const { telefone, mensagem, templateId, beneficiarioId, tipoEnvioTeste } = body;
   const tipoEnvio = (tipoEnvioTeste ?? "texto") as TesteEnvioTipo;
 
-  const serviceClient = process.env.SUPABASE_SERVICE_ROLE_KEY
-    ? await createServiceClient()
-    : supabase;
+  const serviceClient = await getServiceOrUserClient();
 
   const uazapiConfig = await getUazapiConfig(serviceClient);
   if (!uazapiConfig?.url || !uazapiConfig?.token) {
@@ -46,11 +45,15 @@ export async function POST(request: NextRequest) {
   let linkFatura = "";
 
   if (templateId) {
-    const { data: template } = await serviceClient
+    const { data: template, error: templateError } = await serviceClient
       .from("mensagem_templates")
       .select("*")
       .eq("id", templateId)
-      .single();
+      .maybeSingle();
+
+    if (templateError) {
+      return NextResponse.json({ error: templateError.message }, { status: 400 });
+    }
 
     if (!template) {
       return NextResponse.json({ error: "Template não encontrado" }, { status: 404 });
