@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getServiceOrUserClient } from "@/lib/supabase/service-or-user";
 import { renderTemplate } from "@/lib/uazapi/client";
 import { TEMPLATE_SAMPLE_VARS } from "@/lib/message-templates";
 import { buildTemplateVarsForBeneficiario } from "@/lib/services/template-vars";
@@ -22,9 +21,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Template obrigatório" }, { status: 400 });
   }
 
-  const serviceClient = await getServiceOrUserClient();
-
-  const { data: template, error: templateError } = await serviceClient
+  const { data: template, error: templateError } = await supabase
     .from("mensagem_templates")
     .select("*")
     .eq("id", templateId)
@@ -41,7 +38,7 @@ export async function POST(request: NextRequest) {
   try {
     if (beneficiarioId) {
       const result = await buildTemplateVarsForBeneficiario(
-        serviceClient,
+        supabase,
         beneficiarioId,
         template.evento
       );

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { getServiceOrUserClient } from "@/lib/supabase/service-or-user";
 import { getUazapiConfig } from "@/lib/config";
 import { createLog } from "@/lib/logger";
 import { UazapiClient, renderTemplate } from "@/lib/uazapi/client";
@@ -27,9 +26,7 @@ export async function POST(request: NextRequest) {
   const { telefone, mensagem, templateId, beneficiarioId, tipoEnvioTeste } = body;
   const tipoEnvio = (tipoEnvioTeste ?? "texto") as TesteEnvioTipo;
 
-  const serviceClient = await getServiceOrUserClient();
-
-  const uazapiConfig = await getUazapiConfig(serviceClient);
+  const uazapiConfig = await getUazapiConfig(supabase);
   if (!uazapiConfig?.url || !uazapiConfig?.token) {
     return NextResponse.json(
       { error: "Uazapi não configurada. Vá em Configurações." },
@@ -45,7 +42,7 @@ export async function POST(request: NextRequest) {
   let linkFatura = "";
 
   if (templateId) {
-    const { data: template, error: templateError } = await serviceClient
+    const { data: template, error: templateError } = await supabase
       .from("mensagem_templates")
       .select("*")
       .eq("id", templateId)
@@ -63,7 +60,7 @@ export async function POST(request: NextRequest) {
 
     if (beneficiarioId) {
       const result = await buildTemplateVarsForBeneficiario(
-        serviceClient,
+        supabase,
         beneficiarioId,
         template.evento
       );
@@ -155,7 +152,7 @@ export async function POST(request: NextRequest) {
       await client.sendText(phone, texto);
     }
 
-    const { data: registro } = await serviceClient
+    const { data: registro } = await supabase
       .from("mensagens")
       .insert({
         beneficiario_id: beneficiarioId || null,
@@ -169,7 +166,7 @@ export async function POST(request: NextRequest) {
       .select()
       .single();
 
-    await createLog(serviceClient, {
+    await createLog(supabase, {
       usuario_id: user.id,
       acao: "whatsapp_teste_enviado",
       entidade: "mensagens",
@@ -190,7 +187,7 @@ export async function POST(request: NextRequest) {
   } catch (e) {
     const erro = e instanceof Error ? e.message : "Erro ao enviar";
 
-    await serviceClient.from("mensagens").insert({
+    await supabase.from("mensagens").insert({
       beneficiario_id: beneficiarioId || null,
       telefone: phone,
       template_id,
@@ -200,7 +197,7 @@ export async function POST(request: NextRequest) {
       tentativas: 1,
     });
 
-    await createLog(serviceClient, {
+    await createLog(supabase, {
       usuario_id: user.id,
       acao: "whatsapp_teste_erro",
       payload: {

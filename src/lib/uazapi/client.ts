@@ -1,5 +1,16 @@
 import type { ConfigUazapi } from "@/types/database";
 
+function throwUazapiError(data: Record<string, unknown>, fallback: string): never {
+  const raw = data?.message ?? data?.error ?? fallback;
+  const message = String(raw);
+  if (/invalid api key/i.test(message)) {
+    throw new Error(
+      "Token da Uazapi inválido. Verifique em Configurações → Uazapi ou na variável UAZAPI_TOKEN."
+    );
+  }
+  throw new Error(message);
+}
+
 export class UazapiClient {
   private baseUrl: string;
   private token: string;
@@ -24,9 +35,7 @@ export class UazapiClient {
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(
-        data?.message ?? data?.error ?? "Erro ao enviar mensagem WhatsApp"
-      );
+      throwUazapiError(data as Record<string, unknown>, "Erro ao enviar mensagem WhatsApp");
     }
     return data;
   }
@@ -54,9 +63,7 @@ export class UazapiClient {
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(
-        data?.message ?? data?.error ?? "Erro ao enviar botão WhatsApp"
-      );
+      throwUazapiError(data as Record<string, unknown>, "Erro ao enviar botão WhatsApp");
     }
     return data;
   }

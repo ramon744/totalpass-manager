@@ -25,9 +25,11 @@ export async function getConfig<T>(
 
 export async function getAsaasConfig(supabase: SupabaseClient) {
   const config = await getConfig<ConfigAsaas>(supabase, "asaas");
+  const envKey = sanitizeAsaasApiKey(process.env.ASAAS_API_KEY ?? "");
+  const configKey = sanitizeAsaasApiKey(config?.api_key ?? "");
 
   return {
-    api_key: process.env.ASAAS_API_KEY || config?.api_key || "",
+    api_key: envKey || configKey || "",
     ambiente:
       (process.env.ASAAS_ENVIRONMENT as ConfigAsaas["ambiente"] | undefined) ||
       config?.ambiente ||
@@ -83,4 +85,12 @@ export async function updateConfig(
     .update({ valor, updated_at: new Date().toISOString() })
     .eq("chave", chave);
   if (error) throw error;
+}
+
+/** Remove escape/lixo comum em chaves Asaas copiadas do .env. */
+export function sanitizeAsaasApiKey(raw: string): string {
+  const trimmed = raw.trim();
+  const match = trimmed.match(/\$aact_[^\s"'\\]+/);
+  if (match) return match[0];
+  return trimmed.replace(/^\\+/, "");
 }

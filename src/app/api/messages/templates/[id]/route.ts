@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient, createServiceClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
 import { requireActiveAdmin } from "@/lib/auth-admin";
 import { createLog } from "@/lib/logger";
 import type { MensagemTemplate, TipoEnvioMensagem } from "@/types/database";
@@ -17,17 +17,8 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
   }
 
-  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    return NextResponse.json(
-      { error: "SUPABASE_SERVICE_ROLE_KEY não configurada no servidor" },
-      { status: 500 }
-    );
-  }
-
-  const serviceClient = await createServiceClient();
-
   try {
-    await requireActiveAdmin(serviceClient, user.id);
+    await requireActiveAdmin(supabase, user.id);
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Sem permissão" },
@@ -47,7 +38,7 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     updated_at: new Date().toISOString(),
   };
 
-  const { data, error } = await serviceClient
+  const { data, error } = await supabase
     .from("mensagem_templates")
     .update(updatePayload)
     .eq("id", id)
@@ -62,7 +53,7 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: "Template não encontrado" }, { status: 404 });
   }
 
-  await createLog(serviceClient, {
+  await createLog(supabase, {
     usuario_id: user.id,
     acao: "template_atualizado",
     entidade: "mensagem_templates",
