@@ -48,6 +48,7 @@ export async function OPTIONS(request: NextRequest) {
 /**
  * Ponte da extensão TotalPass Bridge → importação no Manager.
  * Auth: sessão Supabase (cookie) OU header x-tp-bridge-secret == TOTALPASS_BRIDGE_SECRET.
+ * Opcional: TOTALPASS_BRIDGE_USER_ID fixa o usuário dono da importação.
  */
 export async function POST(request: NextRequest) {
   const supabaseAuth = await createClient();
@@ -69,25 +70,71 @@ export async function POST(request: NextRequest) {
           500
         );
       }
-      const service = await createServiceClient();
-      const { data: admin } = await service
-        .from("usuarios")
-        .select("id")
-        .eq("role", "admin")
-        .eq("ativo", true)
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle();
 
-      if (!admin?.id) {
-        return json(
-          request,
-          { error: "Nenhum admin ativo encontrado para a ponte" },
-          403
-        );
+      const service = await createServiceClient();
+      const configuredUserId = process.env.TOTALPASS_BRIDGE_USER_ID?.trim();
+
+      if (configuredUserId) {
+        const { data: configured, error: configuredError } = await service
+          .from("usuarios")
+          .select("id, role, ativo")
+          .eq("id", configuredUserId)
+          .maybeSingle();
+
+        if (configuredError) {
+          return json(
+            request,
+            {
+              error: `Erro ao validar TOTALPASS_BRIDGE_USER_ID: ${configuredError.message}`,
+            },
+            500
+          );
+        }
+
+        if (!configured?.id || !configured.ativo) {
+          return json(
+            request,
+            {
+              error:
+                "TOTALPASS_BRIDGE_USER_ID inválido ou usuário inativo no banco",
+            },
+            403
+          );
+        }
+
+        userId = configured.id;
+        viaBridgeSecret = true;
+      } else {
+        // Evita .order().maybeSingle() (pode falhar/voltar vazio em alguns clients).
+        const { data: admins, error: adminsError } = await service
+          .from("usuarios")
+          .select("id")
+          .eq("role", "admin")
+          .eq("ativo", true)
+          .limit(1);
+
+        if (adminsError) {
+          return json(
+            request,
+            { error: `Erro ao buscar admin: ${adminsError.message}` },
+            500
+          );
+        }
+
+        userId = admins?.[0]?.id ?? null;
+        viaBridgeSecret = Boolean(userId);
+
+        if (!userId) {
+          return json(
+            request,
+            {
+              error:
+                "Nenhum admin ativo encontrado para a ponte. Defina TOTALPASS_BRIDGE_USER_ID na Vercel com o UUID do admin.",
+            },
+            403
+          );
+        }
       }
-      userId = admin.id;
-      viaBridgeSecret = true;
     }
   }
 
