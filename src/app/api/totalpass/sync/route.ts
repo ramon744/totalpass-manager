@@ -63,15 +63,33 @@ export async function POST(request: NextRequest) {
     const bridgeSecret = request.headers.get("x-tp-bridge-secret")?.trim();
     const expected = process.env.TOTALPASS_BRIDGE_SECRET?.trim();
     if (bridgeSecret && expected && bridgeSecret === expected) {
-      if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      if (!process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()) {
         return json(
           request,
-          { error: "Service role não configurada no servidor" },
+          {
+            error:
+              "SUPABASE_SERVICE_ROLE_KEY não configurada na Vercel. Copie a service_role em Supabase → Settings → API.",
+          },
           500
         );
       }
 
-      const service = await createServiceClient();
+      let service;
+      try {
+        service = await createServiceClient();
+      } catch (e) {
+        return json(
+          request,
+          {
+            error:
+              e instanceof Error
+                ? e.message
+                : "Falha ao criar cliente service role",
+          },
+          500
+        );
+      }
+
       const configuredUserId = process.env.TOTALPASS_BRIDGE_USER_ID?.trim();
 
       if (configuredUserId) {
@@ -82,10 +100,14 @@ export async function POST(request: NextRequest) {
           .maybeSingle();
 
         if (configuredError) {
+          const msg = configuredError.message || "";
+          const hint = /invalid api key/i.test(msg)
+            ? " A SUPABASE_SERVICE_ROLE_KEY na Vercel está errada ou incompleta. Cole de novo a chave service_role (secret) do Supabase, sem aspas, e faça Redeploy."
+            : "";
           return json(
             request,
             {
-              error: `Erro ao validar TOTALPASS_BRIDGE_USER_ID: ${configuredError.message}`,
+              error: `Erro ao validar TOTALPASS_BRIDGE_USER_ID: ${msg}.${hint}`,
             },
             500
           );
