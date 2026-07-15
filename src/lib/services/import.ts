@@ -60,6 +60,7 @@ const COLUMN_MAP: Record<string, keyof PlanilhaRow> = {
   provedor: "empresa",
   "aderido em": "aderido_em",
   "data aderido": "aderido_em",
+  "data de cadastro na totalpass": "aderido_em",
   "cpf do titular": "titular_cpf",
   "cpf titular": "titular_cpf",
 };
@@ -143,11 +144,25 @@ function parseColaboradoresCsv(buffer: ArrayBuffer): SpreadsheetParseResult {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
   if (lines.length === 0) return { rows: [], hasEmpresaColumn: false };
 
-  const headerFields = parseCsvFields(lines[0]).map((c) => normalizeHeader(String(c)));
+  // Formato TotalPass: metadados no topo — descobre a linha de cabeçalho.
+  let headerLineIdx = 0;
+  for (let i = 0; i < Math.min(lines.length, 30); i++) {
+    const headers = parseCsvFields(lines[i]).map((c) => normalizeHeader(String(c)));
+    const hasNome = headers.includes("nome");
+    const hasDoc = headers.some((h) => COLUMN_MAP[h] === "cpf");
+    if (hasNome && hasDoc) {
+      headerLineIdx = i;
+      break;
+    }
+  }
+
+  const headerFields = parseCsvFields(lines[headerLineIdx]).map((c) =>
+    normalizeHeader(String(c))
+  );
   const hasEmpresaColumn = headerFields.some((h) => COLUMN_MAP[h] === "empresa");
 
   const rows: PlanilhaRow[] = [];
-  for (let i = 1; i < lines.length; i++) {
+  for (let i = headerLineIdx + 1; i < lines.length; i++) {
     const fields = parseCsvFields(lines[i]);
     if (!fields.length) continue;
 
@@ -165,6 +180,10 @@ function parseColaboradoresCsv(buffer: ArrayBuffer): SpreadsheetParseResult {
     });
 
     if (!hasData) continue;
+
+    if (mapped.aderido_em) {
+      mapped.aderido_em = parseExcelDate(mapped.aderido_em) ?? undefined;
+    }
     rows.push(mapped);
   }
 
