@@ -297,9 +297,59 @@ async function removeBeneficiarioLocal(
     userId: options?.userId,
   });
 
-  await supabase.from("cobrancas").delete().eq("beneficiario_id", id);
-  await supabase.from("mensagens").delete().eq("beneficiario_id", id);
-  await supabase.from("assinaturas").delete().eq("beneficiario_id", id);
+  // Ordem obrigatória por FK: cobrancas → assinaturas → beneficiario.
+  // Apaga cobranças tanto pelo beneficiário quanto pelas assinaturas dele
+  // (evita falha se houver vínculo só via assinatura_id).
+  const { data: assinaturas, error: assinaturasQueryError } = await supabase
+    .from("assinaturas")
+    .select("id")
+    .eq("beneficiario_id", id);
+
+  if (assinaturasQueryError) {
+    throw new Error(
+      `Erro ao localizar assinaturas: ${assinaturasQueryError.message}`
+    );
+  }
+
+  const assinaturaIds = (assinaturas ?? []).map((a) => a.id);
+
+  if (assinaturaIds.length > 0) {
+    const { error: cobrancasAssinaturaError } = await supabase
+      .from("cobrancas")
+      .delete()
+      .in("assinatura_id", assinaturaIds);
+    if (cobrancasAssinaturaError) {
+      throw new Error(
+        `Erro ao remover cobranças vinculadas à assinatura: ${cobrancasAssinaturaError.message}`
+      );
+    }
+  }
+
+  const { error: cobrancasError } = await supabase
+    .from("cobrancas")
+    .delete()
+    .eq("beneficiario_id", id);
+  if (cobrancasError) {
+    throw new Error(`Erro ao remover cobranças: ${cobrancasError.message}`);
+  }
+
+  const { error: mensagensError } = await supabase
+    .from("mensagens")
+    .delete()
+    .eq("beneficiario_id", id);
+  if (mensagensError) {
+    throw new Error(`Erro ao remover mensagens: ${mensagensError.message}`);
+  }
+
+  const { error: assinaturasError } = await supabase
+    .from("assinaturas")
+    .delete()
+    .eq("beneficiario_id", id);
+  if (assinaturasError) {
+    throw new Error(
+      `Erro ao remover assinaturas: ${assinaturasError.message}`
+    );
+  }
 
   const { data: beneficiario } = await supabase
     .from("beneficiarios")
