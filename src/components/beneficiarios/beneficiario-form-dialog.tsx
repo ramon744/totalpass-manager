@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import type {
   Beneficiario,
+  GatewayPagamento,
   PerfilBeneficiario,
   Provedor,
   StatusTotalpass,
@@ -34,6 +35,16 @@ interface FormState {
   plano: string;
   data_aderido_totalpass: string;
   observacoes: string;
+  gateway_pagamento: GatewayPagamento;
+  infinity_customer_id: string;
+  infinity_subscription_slug: string;
+}
+
+function formatDateBr(value: string | null): string | null {
+  if (!value) return null;
+  const parts = value.split("-");
+  if (parts.length !== 3) return value;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
 }
 
 const emptyForm = (): FormState => ({
@@ -47,6 +58,9 @@ const emptyForm = (): FormState => ({
   plano: "",
   data_aderido_totalpass: "",
   observacoes: "",
+  gateway_pagamento: "asaas",
+  infinity_customer_id: "",
+  infinity_subscription_slug: "",
 });
 
 function fromBeneficiario(b: Beneficiario): FormState {
@@ -61,6 +75,9 @@ function fromBeneficiario(b: Beneficiario): FormState {
     plano: b.plano ?? "",
     data_aderido_totalpass: b.data_aderido_totalpass ?? "",
     observacoes: b.observacoes ?? "",
+    gateway_pagamento: b.gateway_pagamento ?? "asaas",
+    infinity_customer_id: b.infinity_customer_id ?? "",
+    infinity_subscription_slug: b.infinity_subscription_slug ?? "",
   };
 }
 
@@ -128,6 +145,13 @@ export function BeneficiarioFormDialog({
       plano: form.plano || null,
       data_aderido_totalpass: form.data_aderido_totalpass || null,
       observacoes: form.observacoes || null,
+      gateway_pagamento: isDependente ? ("nenhum" as const) : form.gateway_pagamento,
+      infinity_customer_id: isDependente
+        ? null
+        : form.infinity_customer_id.trim() || null,
+      infinity_subscription_slug: isDependente
+        ? null
+        : form.infinity_subscription_slug.trim() || null,
     };
 
     try {
@@ -159,12 +183,43 @@ export function BeneficiarioFormDialog({
         ? `Adicionar dependente${titularNome ? ` — ${titularNome}` : ""}`
         : "Novo titular";
 
+  const checkins =
+    isEdit && beneficiario && beneficiario.checkins_30d !== null
+      ? {
+          total: beneficiario.checkins_30d,
+          inicio: formatDateBr(beneficiario.checkins_periodo_inicio),
+          fim: formatDateBr(beneficiario.checkins_periodo_fim),
+          atualizado: beneficiario.checkins_atualizado_em
+            ? new Date(beneficiario.checkins_atualizado_em).toLocaleString("pt-BR")
+            : null,
+        }
+      : null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
+
+        {checkins && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/40">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">
+                Check-ins (últimos 30 dias)
+              </span>
+              <span className="text-2xl font-semibold tabular-nums">
+                {checkins.total}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              {checkins.inicio && checkins.fim
+                ? `Período: ${checkins.inicio} a ${checkins.fim}`
+                : "Período não informado"}
+              {checkins.atualizado ? ` · atualizado em ${checkins.atualizado}` : ""}
+            </p>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -261,6 +316,62 @@ export function BeneficiarioFormDialog({
               />
             </div>
           </div>
+
+          {!isDependente && (
+            <div className="space-y-3 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
+              <div>
+                <label className="mb-1 block text-sm font-medium">
+                  Gateway de cobrança
+                </label>
+                <select
+                  className="flex h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm dark:border-slate-700 dark:bg-slate-900"
+                  value={form.gateway_pagamento}
+                  onChange={(e) =>
+                    updateField(
+                      "gateway_pagamento",
+                      e.target.value as GatewayPagamento
+                    )
+                  }
+                >
+                  <option value="asaas">Asaas</option>
+                  <option value="infinity">InfinitePay</option>
+                  <option value="nenhum">Nenhum</option>
+                </select>
+                <p className="mt-1 text-xs text-slate-500">
+                  Um titular ativo usa um gateway por vez. Não cancela o outro
+                  sozinho — migração é manual.
+                </p>
+              </div>
+              {form.gateway_pagamento === "infinity" && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">
+                      Infinity customer ID
+                    </label>
+                    <Input
+                      value={form.infinity_customer_id}
+                      onChange={(e) =>
+                        updateField("infinity_customer_id", e.target.value)
+                      }
+                      placeholder="ex: 7337441"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">
+                      Infinity subscription slug
+                    </label>
+                    <Input
+                      value={form.infinity_subscription_slug}
+                      onChange={(e) =>
+                        updateField("infinity_subscription_slug", e.target.value)
+                      }
+                      placeholder="ex: TbGLPsi1xO"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="mb-1 block text-sm font-medium">

@@ -7,12 +7,18 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type {
   ConfigAsaas,
+  ConfigBridge,
   ConfigCron,
   ConfigEmpresa,
   ConfigFinanceiro,
+  ConfigInfinity,
   ConfigUazapi,
 } from "@/types/database";
-import { DEFAULT_CRON_CONFIG } from "@/types/database";
+import {
+  DEFAULT_BRIDGE_CONFIG,
+  DEFAULT_CRON_CONFIG,
+  DEFAULT_INFINITY_CONFIG,
+} from "@/types/database";
 import {
   brtTimeToUtc,
   formatCronTimeValue,
@@ -23,6 +29,12 @@ import {
   FORMA_PAGAMENTO_OPCOES,
   getFormaPagamentoPadrao,
 } from "@/lib/assinatura-billing";
+import {
+  maskEmailInput,
+  maskPhoneInput,
+  normalizePhone,
+} from "@/lib/utils";
+import Link from "next/link";
 
 interface Props {
   empresa: ConfigEmpresa;
@@ -30,6 +42,38 @@ interface Props {
   asaas: ConfigAsaas;
   uazapi: ConfigUazapi;
   cron: ConfigCron;
+  bridge: ConfigBridge;
+  infinity: ConfigInfinity;
+  infinityStatus?: {
+    instances: Array<{
+      installation_id: string;
+      last_seen_at: string;
+      session_ok: boolean;
+      overdue_count?: number;
+      extension_version: string | null;
+    }>;
+    overdue: number;
+    pending: number;
+    paid: number;
+    health?: {
+      online: boolean;
+      reason: string;
+      lastSeenAt: string | null;
+    };
+  };
+  bridgeStatus?: {
+    instances: Array<{
+      installation_id: string;
+      last_seen_at: string;
+      session_ok: boolean;
+      pending_jobs_count: number;
+      extension_version: string | null;
+    }>;
+    pending: number;
+    failed: number;
+    succeededToday: number;
+    pendentesManuaisCount?: number;
+  };
 }
 
 export function ConfiguracoesForm({
@@ -38,14 +82,34 @@ export function ConfiguracoesForm({
   asaas: asaasInit,
   uazapi: uazapiInit,
   cron: cronInit,
+  bridge: bridgeInit,
+  infinity: infinityInit,
+  infinityStatus: infinityStatusInit,
+  bridgeStatus: bridgeStatusInit,
 }: Props) {
   const [empresa, setEmpresa] = useState(empresaInit);
   const [financeiro, setFinanceiro] = useState(financeiroInit);
   const [asaas, setAsaas] = useState(asaasInit);
   const [uazapi, setUazapi] = useState(uazapiInit);
   const [cron, setCron] = useState(cronInit);
+  const [bridge, setBridge] = useState({
+    ...DEFAULT_BRIDGE_CONFIG,
+    ...bridgeInit,
+    admin_telefone: maskPhoneInput(bridgeInit.admin_telefone ?? ""),
+    admin_email: maskEmailInput(bridgeInit.admin_email ?? ""),
+  });
+  const [infinity, setInfinity] = useState({
+    ...DEFAULT_INFINITY_CONFIG,
+    ...infinityInit,
+    admin_telefone: maskPhoneInput(infinityInit.admin_telefone ?? ""),
+    admin_email: maskEmailInput(infinityInit.admin_email ?? ""),
+    bridge_secret: infinityInit.bridge_secret ?? "",
+  });
+  const [bridgeStatus, setBridgeStatus] = useState(bridgeStatusInit);
+  const [infinityStatus, setInfinityStatus] = useState(infinityStatusInit);
   const [loading, setLoading] = useState(false);
   const [runningReminders, setRunningReminders] = useState(false);
+  const [retryingJobs, setRetryingJobs] = useState(false);
 
   async function salvar(chave: string, valor: object) {
     setLoading(true);
@@ -110,6 +174,26 @@ export function ConfiguracoesForm({
       toast.error(e instanceof Error ? e.message : "Erro ao executar lembretes");
     } finally {
       setRunningReminders(false);
+    }
+  }
+
+  async function reprocessarJobsFalhos() {
+    setRetryingJobs(true);
+    try {
+      const res = await fetch("/api/totalpass/bridge/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "retry_failed" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      toast.success(`${data.retried} job(s) reenviado(s) para a fila`);
+      const statusRes = await fetch("/api/totalpass/bridge/status");
+      if (statusRes.ok) setBridgeStatus(await statusRes.json());
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao reprocessar");
+    } finally {
+      setRetryingJobs(false);
     }
   }
 
@@ -384,6 +468,477 @@ export function ConfiguracoesForm({
           <Button disabled={loading} onClick={() => salvar("uazapi", uazapi)}>
             Salvar Uazapi
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="lg:col-span-2">
+        <CardHeader>
+          <CardTitle>Bridge / Extensão TotalPass</CardTitle>
+          <CardDescription>
+            Inativação por inadimplência e alerta se a extensão cair. Aviso
+            WhatsApp segue mesmo offline; jobs no HR só com ponte saudável.
+            Prazos vencidos para ação manual ficam em Cobranças.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/40">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={
+                bridge.automacao_inativacao_ativa !== false
+              }
+              onChange={(e) =>
+                setBridge({
+                  ...bridge,
+                  automacao_inativacao_ativa: e.target.checked,
+                })
+              }
+            />
+            <span>
+              <span className="font-medium">
+                Permitir automação de inativação
+              </span>
+              <span className="mt-1 block text-xs text-slate-500">
+                Ligada: envia aviso de desvínculo; enfileira no HR só com
+                extensão online. Offline → aviso continua; você desvincula
+                manualmente quem passou do prazo. Ao voltar, ignora quem já
+                foi tratado no Manager. Desligada: pausa aviso e fila
+                (manutenção).
+              </span>
+            </span>
+          </label>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                Dias de carência (após vencimento)
+              </label>
+              <Input
+                type="number"
+                min={0}
+                max={60}
+                value={bridge.dias_carencia ?? DEFAULT_BRIDGE_CONFIG.dias_carencia}
+                onChange={(e) =>
+                  setBridge({
+                    ...bridge,
+                    dias_carencia: Number(e.target.value),
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                Dias do aviso até desvincular
+              </label>
+              <Input
+                type="number"
+                min={0}
+                max={30}
+                value={
+                  bridge.dias_aviso_final ?? DEFAULT_BRIDGE_CONFIG.dias_aviso_final
+                }
+                onChange={(e) =>
+                  setBridge({
+                    ...bridge,
+                    dias_aviso_final: Number(e.target.value),
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                Teto diário de inativações
+              </label>
+              <Input
+                type="number"
+                min={1}
+                max={200}
+                value={
+                  bridge.teto_diario_inativacoes ??
+                  DEFAULT_BRIDGE_CONFIG.teto_diario_inativacoes
+                }
+                onChange={(e) =>
+                  setBridge({
+                    ...bridge,
+                    teto_diario_inativacoes: Number(e.target.value),
+                  })
+                }
+              />
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                WhatsApp do admin (alerta offline)
+              </label>
+              <Input
+                value={bridge.admin_telefone ?? ""}
+                onChange={(e) =>
+                  setBridge({
+                    ...bridge,
+                    admin_telefone: maskPhoneInput(e.target.value),
+                  })
+                }
+                placeholder="(11) 91234-5678"
+                inputMode="numeric"
+                autoComplete="tel"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                E-mail do admin (alerta offline)
+              </label>
+              <Input
+                type="email"
+                value={bridge.admin_email ?? ""}
+                onChange={(e) =>
+                  setBridge({
+                    ...bridge,
+                    admin_email: maskEmailInput(e.target.value),
+                  })
+                }
+                placeholder="voce@girosaas.com.br"
+                autoComplete="email"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Usado no alerta de bridge offline e também quando a Uazapi /
+                WhatsApp desconectar (fila de clientes pausada).
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                Intervalo entre alertas offline (horas)
+              </label>
+              <Input
+                type="number"
+                min={1}
+                max={48}
+                value={
+                  bridge.alerta_offline_intervalo_horas ??
+                  DEFAULT_BRIDGE_CONFIG.alerta_offline_intervalo_horas
+                }
+                onChange={(e) =>
+                  setBridge({
+                    ...bridge,
+                    alerta_offline_intervalo_horas: Number(e.target.value),
+                  })
+                }
+              />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={
+                bridge.notificar_cancelamento_asaas ??
+                DEFAULT_BRIDGE_CONFIG.notificar_cancelamento_asaas
+              }
+              onChange={(e) =>
+                setBridge({
+                  ...bridge,
+                  notificar_cancelamento_asaas: e.target.checked,
+                })
+              }
+            />
+            Notificar beneficiário ao cancelar assinatura no Asaas (após
+            inativar no TotalPass)
+          </label>
+          {bridgeStatus && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/40">
+              <p>
+                Fila: <strong>{bridgeStatus.pending}</strong> pendente(s),{" "}
+                <strong>{bridgeStatus.failed}</strong> falho(s),{" "}
+                <strong>{bridgeStatus.succeededToday}</strong> sucesso(s) hoje
+                {(bridgeStatus.pendentesManuaisCount ?? 0) > 0 && (
+                  <>
+                    {" "}
+                    ·{" "}
+                    <Link
+                      href="/cobrancas#desvinculos-pendentes"
+                      className="font-medium text-amber-700 underline-offset-2 hover:underline dark:text-amber-400"
+                    >
+                      {bridgeStatus.pendentesManuaisCount} prazo(s) vencido(s)
+                    </Link>
+                  </>
+                )}
+              </p>
+              {bridgeStatus.instances?.[0] ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Última extensão:{" "}
+                  {bridgeStatus.instances[0].session_ok ? "sessão ok" : "offline"}{" "}
+                  ·{" "}
+                  {new Date(
+                    bridgeStatus.instances[0].last_seen_at
+                  ).toLocaleString("pt-BR")}{" "}
+                  · v{bridgeStatus.instances[0].extension_version || "?"}
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-slate-500">
+                  Nenhuma extensão enviou heartbeat ainda.
+                </p>
+              )}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              disabled={loading}
+              onClick={() =>
+                salvar("bridge", {
+                  dias_carencia: bridge.dias_carencia,
+                  dias_aviso_final: bridge.dias_aviso_final,
+                  heartbeat_ttl_minutos:
+                    bridge.heartbeat_ttl_minutos ??
+                    DEFAULT_BRIDGE_CONFIG.heartbeat_ttl_minutos,
+                  admin_telefone: normalizePhone(bridge.admin_telefone ?? ""),
+                  admin_email: maskEmailInput(bridge.admin_email ?? ""),
+                  alerta_offline_intervalo_horas:
+                    bridge.alerta_offline_intervalo_horas,
+                  teto_diario_inativacoes: bridge.teto_diario_inativacoes,
+                  notificar_cancelamento_asaas:
+                    bridge.notificar_cancelamento_asaas,
+                  automacao_inativacao_ativa:
+                    bridge.automacao_inativacao_ativa !== false,
+                })
+              }
+            >
+              Salvar bridge
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={retryingJobs || loading}
+              onClick={reprocessarJobsFalhos}
+            >
+              {retryingJobs ? "Reprocessando..." : "Reprocessar jobs falhos"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="lg:col-span-2">
+        <CardHeader>
+          <CardTitle>InfinitePay (extensão)</CardTitle>
+          <CardDescription>
+            Extensão Infinity Bridge. Sync de clientes ativo (Fase 2). Escrita
+            create/cancel (Fase 3) ainda não liberada — mantenha{" "}
+            <strong>dry-run ligado</strong> até validar. Desvínculo automático é
+            Fase 4.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/40">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={infinity.ativa === true}
+              onChange={(e) =>
+                setInfinity({ ...infinity, ativa: e.target.checked })
+              }
+            />
+            <span>
+              <span className="font-medium">Ativar integração Infinity</span>
+              <span className="mt-1 block text-xs text-slate-500">
+                Ligada: a extensão Infinity poderá autenticar e sincronizar.
+                Desligada: nenhum sync Infinity (modo seguro).
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/40">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={infinity.dry_run !== false}
+              onChange={(e) =>
+                setInfinity({ ...infinity, dry_run: e.target.checked })
+              }
+            />
+            <span>
+              <span className="font-medium">Dry-run (não escrever na Infinity)</span>
+              <span className="mt-1 block text-xs text-slate-500">
+                Manter ligado até validar a Fase 3. Jobs de criar/cancelar não
+                chamam a API de verdade (só simulam).
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/40">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={infinity.automacao_desvinculo_ativa === true}
+              onChange={(e) =>
+                setInfinity({
+                  ...infinity,
+                  automacao_desvinculo_ativa: e.target.checked,
+                })
+              }
+            />
+            <span>
+              <span className="font-medium">
+                Automação de desvínculo por atraso Infinity
+              </span>
+              <span className="mt-1 block text-xs text-slate-500">
+                Fase 4 — ainda sem efeito no cron. Deixe desligada até o sync
+                e os jobs estarem estáveis.
+              </span>
+            </span>
+          </label>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                Segredo da extensão Infinity
+              </label>
+              <Input
+                type="password"
+                value={infinity.bridge_secret ?? ""}
+                onChange={(e) =>
+                  setInfinity({ ...infinity, bridge_secret: e.target.value })
+                }
+                placeholder="ou INFINITY_BRIDGE_SECRET no Vercel"
+                autoComplete="new-password"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Preferível variável de ambiente. Se ambos existirem, o env
+                prevalece.
+              </p>
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                Teto diário de operações
+              </label>
+              <Input
+                type="number"
+                min={1}
+                max={200}
+                value={
+                  infinity.teto_diario_operacoes ??
+                  DEFAULT_INFINITY_CONFIG.teto_diario_operacoes
+                }
+                onChange={(e) =>
+                  setInfinity({
+                    ...infinity,
+                    teto_diario_operacoes: Number(e.target.value),
+                  })
+                }
+              />
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                WhatsApp admin (alertas Infinity)
+              </label>
+              <Input
+                value={infinity.admin_telefone ?? ""}
+                onChange={(e) =>
+                  setInfinity({
+                    ...infinity,
+                    admin_telefone: maskPhoneInput(e.target.value),
+                  })
+                }
+                placeholder="(11) 91234-5678"
+                inputMode="numeric"
+                autoComplete="tel"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium">
+                E-mail admin (alertas Infinity)
+              </label>
+              <Input
+                type="email"
+                value={infinity.admin_email ?? ""}
+                onChange={(e) =>
+                  setInfinity({
+                    ...infinity,
+                    admin_email: maskEmailInput(e.target.value),
+                  })
+                }
+                placeholder="voce@girosaas.com.br"
+                autoComplete="email"
+              />
+            </div>
+          </div>
+          {infinityStatus && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/40">
+              <p>
+                Sync: <strong>{infinityStatus.overdue}</strong> em atraso ·{" "}
+                <strong>{infinityStatus.pending}</strong> pendente ·{" "}
+                <strong>{infinityStatus.paid}</strong> pago
+                {infinityStatus.health && (
+                  <>
+                    {" "}
+                    · saúde:{" "}
+                    <strong>
+                      {infinityStatus.health.online ? "online" : "offline"}
+                    </strong>
+                    {!infinityStatus.health.online &&
+                      ` (${infinityStatus.health.reason})`}
+                  </>
+                )}
+              </p>
+              {infinityStatus.instances?.[0] ? (
+                <p className="mt-1 text-xs text-slate-500">
+                  Última extensão:{" "}
+                  {infinityStatus.instances[0].session_ok
+                    ? "sessão ok"
+                    : "offline"}{" "}
+                  ·{" "}
+                  {new Date(
+                    infinityStatus.instances[0].last_seen_at
+                  ).toLocaleString("pt-BR")}{" "}
+                  · v{infinityStatus.instances[0].extension_version || "?"}
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-slate-500">
+                  Nenhuma extensão Infinity enviou heartbeat ainda. Carregue a
+                  pasta <code>infinity-extension</code> no Chrome e configure o
+                  segredo.
+                </p>
+              )}
+            </div>
+          )}
+          <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            Marque titulares com gateway InfinitePay na ficha. Com a integração
+            ligada, a extensão sincroniza overdue sem criar/cancelar cobranças
+            (dry-run ainda vale para Fase 3).
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              disabled={loading}
+              onClick={async () => {
+                const valor: Record<string, unknown> = {
+                  ativa: infinity.ativa === true,
+                  automacao_desvinculo_ativa:
+                    infinity.automacao_desvinculo_ativa === true,
+                  dry_run: infinity.dry_run !== false,
+                  heartbeat_ttl_minutos:
+                    infinity.heartbeat_ttl_minutos ??
+                    DEFAULT_INFINITY_CONFIG.heartbeat_ttl_minutos,
+                  alerta_offline_intervalo_horas:
+                    infinity.alerta_offline_intervalo_horas ??
+                    DEFAULT_INFINITY_CONFIG.alerta_offline_intervalo_horas,
+                  teto_diario_operacoes: infinity.teto_diario_operacoes,
+                  admin_telefone: normalizePhone(infinity.admin_telefone ?? ""),
+                  admin_email: maskEmailInput(infinity.admin_email ?? ""),
+                };
+                if (infinity.bridge_secret?.trim()) {
+                  valor.bridge_secret = infinity.bridge_secret.trim();
+                }
+                await salvar("infinity", valor);
+                setInfinity((prev) => ({ ...prev, bridge_secret: "" }));
+                try {
+                  const statusRes = await fetch("/api/infinity/bridge/status");
+                  if (statusRes.ok) setInfinityStatus(await statusRes.json());
+                } catch {
+                  // opcional
+                }
+              }}
+            >
+              Salvar Infinity
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

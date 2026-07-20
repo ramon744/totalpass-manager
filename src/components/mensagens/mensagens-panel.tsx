@@ -17,8 +17,11 @@ import {
 } from "@/components/ui/dialog";
 import { formatDateTime, maskPhoneInput, statusLabel } from "@/lib/utils";
 import {
+  getTemplateEventMeta,
+  getTemplateQuandoText,
   getVariablesForEvent,
   renderTemplatePreview,
+  TEMPLATE_GROUPS,
 } from "@/lib/message-templates";
 import type {
   Beneficiario,
@@ -34,6 +37,14 @@ const tipoEnvioOptions: Array<{ value: TipoEnvioMensagem; label: string }> = [
   { value: "botoes_pix_boleto", label: "Botões PIX + boleto" },
   { value: "botoes_pagamento", label: "Botões PIX + boleto + fatura" },
 ];
+
+/** Templates removidos do produto (não listar mesmo se ainda existirem no banco). */
+const TEMPLATES_OCULTOS = new Set(["vencimento_7dias"]);
+
+type BridgePrazos = {
+  dias_carencia: number;
+  dias_aviso_final: number;
+};
 
 type MensagemComBeneficiario = Mensagem & {
   beneficiario: Beneficiario | Beneficiario[] | null;
@@ -90,6 +101,7 @@ export function MensagensPanel({
   pessoas,
   pagination,
   filtros,
+  bridgePrazos,
 }: {
   mensagens: MensagemComBeneficiario[];
   templates: MensagemTemplate[];
@@ -97,17 +109,39 @@ export function MensagensPanel({
   pessoas: PessoaOption[];
   pagination: MensagensPagination;
   filtros: MensagensFiltros;
+  bridgePrazos?: BridgePrazos;
 }) {
   const router = useRouter();
   const [tab, setTab] = useState<"historico" | "templates" | "testar">("historico");
-  const [editedTemplates, setEditedTemplates] = useState(templates);
+  const [editedTemplates, setEditedTemplates] = useState(() =>
+    templates.filter((t) => !TEMPLATES_OCULTOS.has(t.evento))
+  );
   const [loading, setLoading] = useState(false);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    setEditedTemplates(templates);
+    setEditedTemplates(
+      templates.filter((t) => !TEMPLATES_OCULTOS.has(t.evento))
+    );
   }, [templates]);
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  const prazos = bridgePrazos ?? { dias_carencia: 5, dias_aviso_final: 2 };
+
+  const templateGroups = useMemo(() => {
+    const indexed = editedTemplates.map((t, i) => ({ t, i }));
+    return TEMPLATE_GROUPS.map((group) => {
+      const items = indexed
+        .filter(({ t }) => getTemplateEventMeta(t.evento).grupo === group.id)
+        .sort(
+          (a, b) =>
+            getTemplateEventMeta(a.t.evento).order -
+            getTemplateEventMeta(b.t.evento).order
+        );
+      return { group, items };
+    }).filter((g) => g.items.length > 0);
+  }, [editedTemplates]);
+
   const [previewLoading, setPreviewLoading] = useState(false);
   const [testBeneficiarioId, setTestBeneficiarioId] = useState("");
   const [testPhone, setTestPhone] = useState("");
@@ -350,7 +384,7 @@ export function MensagensPanel({
               : "bg-slate-100 dark:bg-slate-800"
           }`}
         >
-          Templates ({templates.length})
+          Templates ({editedTemplates.length})
         </button>
         <button
           onClick={() => setTab("testar")}
@@ -423,7 +457,7 @@ export function MensagensPanel({
                 <option value="">Mensagem personalizada</option>
                 {editedTemplates.map((t) => (
                   <option key={t.id} value={t.id}>
-                    {t.titulo}
+                    {getTemplateEventMeta(t.evento).tituloAmigavel || t.titulo}
                     {!t.ativo ? " (inativo)" : ""}
                   </option>
                 ))}
@@ -777,117 +811,165 @@ export function MensagensPanel({
           </Dialog>
         </>
       ) : (
-        <div className="space-y-4">
-          {editedTemplates.map((t, i) => (
-            <div
-              key={t.id}
-              className="rounded-xl border border-slate-200 p-4 dark:border-slate-800"
-            >
-              <div className="mb-2 flex items-center justify-between">
-                <h3 className="font-medium">{t.titulo}</h3>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={t.ativo}
-                    onChange={(e) => {
-                      const next = [...editedTemplates];
-                      next[i] = { ...t, ativo: e.target.checked };
-                      setEditedTemplates(next);
-                    }}
-                  />
-                  Ativo
-                </label>
+        <div className="space-y-6">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm dark:border-slate-800 dark:bg-slate-900/40">
+            <p className="font-medium text-slate-800 dark:text-slate-100">
+              Como ler esta aba
+            </p>
+            <p className="mt-1 text-slate-600 dark:text-slate-400">
+              Os templates estão agrupados pelo momento do fluxo. Em cada um, veja
+              a linha <strong>Quando</strong> para saber em que situação a
+              mensagem sai. Prazos de inadimplência atuais:{" "}
+              <strong>{prazos.dias_carencia} dias</strong> de carência (atraso)
+              + <strong>{prazos.dias_aviso_final} dia(s)</strong> de prazo no
+              aviso (data limite até 23:59).
+            </p>
+          </div>
+
+          {templateGroups.map(({ group, items }) => (
+            <section key={group.id} className="space-y-3">
+              <div>
+                <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                  {group.titulo}
+                </h2>
+                <p className="text-sm text-slate-500">{group.descricao}</p>
               </div>
-              <p className="mb-2 text-xs text-slate-500">Evento: {t.evento}</p>
-              <p className="mb-2 text-xs text-slate-500">
-                Variáveis:{" "}
-                {getVariablesForEvent(t.evento)
-                  .map((v) => `{{${v}}}`)
-                  .join(", ")}
-              </p>
-              <div className="mb-3 grid gap-3 md:grid-cols-3">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-500">
-                    Tipo de envio automático
-                  </label>
-                  <select
-                    className="flex h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm dark:border-slate-700 dark:bg-slate-900"
-                    value={t.tipo_envio ?? "texto"}
-                    onChange={(e) => {
-                      const next = [...editedTemplates];
-                      next[i] = {
-                        ...t,
-                        tipo_envio: e.target.value as TipoEnvioMensagem,
-                      };
-                      setEditedTemplates(next);
-                    }}
+
+              {items.map(({ t, i }) => {
+                const meta = getTemplateEventMeta(t.evento);
+                return (
+                  <div
+                    key={t.id}
+                    className="rounded-xl border border-slate-200 p-4 dark:border-slate-800"
                   >
-                    {tipoEnvioOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-500">
-                    Máx. tentativas
-                  </label>
-                  <Input
-                    type="number"
-                    min={1}
-                    max={10}
-                    value={t.max_tentativas ?? 3}
-                    onChange={(e) => {
-                      const next = [...editedTemplates];
-                      next[i] = {
-                        ...t,
-                        max_tentativas: Math.max(1, Number(e.target.value) || 1),
-                      };
-                      setEditedTemplates(next);
-                    }}
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-slate-500">
-                    Retry (minutos)
-                  </label>
-                  <Input
-                    value={(t.intervalo_retry_minutos ?? [10, 30, 60]).join(",")}
-                    onChange={(e) => {
-                      const intervals = e.target.value
-                        .split(",")
-                        .map((v) => Number(v.trim()))
-                        .filter((v) => Number.isFinite(v) && v > 0);
-                      const next = [...editedTemplates];
-                      next[i] = {
-                        ...t,
-                        intervalo_retry_minutos: intervals.length ? intervals : [10],
-                      };
-                      setEditedTemplates(next);
-                    }}
-                    placeholder="10,30,60"
-                  />
-                </div>
-              </div>
-              <textarea
-                className="w-full rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700 dark:bg-slate-900"
-                rows={3}
-                value={t.corpo}
-                onChange={(e) => {
-                  const next = [...editedTemplates];
-                  next[i] = { ...t, corpo: e.target.value };
-                  setEditedTemplates(next);
-                }}
-              />
-              <Button
-                size="sm"
-                className="mt-2"
-                onClick={() => saveTemplate(editedTemplates[i])}
-              >
-                Salvar template
-              </Button>
-            </div>
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="font-medium">
+                          {meta.tituloAmigavel || t.titulo}
+                        </h3>
+                        {meta.tituloAmigavel !== t.titulo && (
+                          <p className="text-xs text-slate-500">{t.titulo}</p>
+                        )}
+                      </div>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={t.ativo}
+                          onChange={(e) => {
+                            const next = [...editedTemplates];
+                            next[i] = { ...t, ativo: e.target.checked };
+                            setEditedTemplates(next);
+                          }}
+                        />
+                        Ativo
+                      </label>
+                    </div>
+                    <p className="mb-2 rounded-lg border border-emerald-200/80 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200">
+                      <span className="font-semibold">Quando: </span>
+                      {getTemplateQuandoText(t.evento, prazos)}
+                    </p>
+                    <p className="mb-2 text-xs text-slate-500">
+                      Evento técnico: <code>{t.evento}</code>
+                    </p>
+                    <p className="mb-2 text-xs text-slate-500">
+                      Variáveis:{" "}
+                      {getVariablesForEvent(t.evento)
+                        .map((v) => `{{${v}}}`)
+                        .join(", ")}
+                    </p>
+                    <div className="mb-3 grid gap-3 md:grid-cols-3">
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-slate-500">
+                          Tipo de envio automático
+                        </label>
+                        <select
+                          className="flex h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm dark:border-slate-700 dark:bg-slate-900"
+                          value={t.tipo_envio ?? "texto"}
+                          onChange={(e) => {
+                            const next = [...editedTemplates];
+                            next[i] = {
+                              ...t,
+                              tipo_envio: e.target.value as TipoEnvioMensagem,
+                            };
+                            setEditedTemplates(next);
+                          }}
+                        >
+                          {tipoEnvioOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-slate-500">
+                          Máx. tentativas
+                        </label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={10}
+                          value={t.max_tentativas ?? 3}
+                          onChange={(e) => {
+                            const next = [...editedTemplates];
+                            next[i] = {
+                              ...t,
+                              max_tentativas: Math.max(
+                                1,
+                                Number(e.target.value) || 1
+                              ),
+                            };
+                            setEditedTemplates(next);
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-slate-500">
+                          Retry (minutos)
+                        </label>
+                        <Input
+                          value={(
+                            t.intervalo_retry_minutos ?? [10, 30, 60]
+                          ).join(",")}
+                          onChange={(e) => {
+                            const intervals = e.target.value
+                              .split(",")
+                              .map((v) => Number(v.trim()))
+                              .filter((v) => Number.isFinite(v) && v > 0);
+                            const next = [...editedTemplates];
+                            next[i] = {
+                              ...t,
+                              intervalo_retry_minutos: intervals.length
+                                ? intervals
+                                : [10],
+                            };
+                            setEditedTemplates(next);
+                          }}
+                          placeholder="10,30,60"
+                        />
+                      </div>
+                    </div>
+                    <textarea
+                      className="w-full rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700 dark:bg-slate-900"
+                      rows={3}
+                      value={t.corpo}
+                      onChange={(e) => {
+                        const next = [...editedTemplates];
+                        next[i] = { ...t, corpo: e.target.value };
+                        setEditedTemplates(next);
+                      }}
+                    />
+                    <Button
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => saveTemplate(editedTemplates[i])}
+                    >
+                      Salvar template
+                    </Button>
+                  </div>
+                );
+              })}
+            </section>
           ))}
         </div>
       )}

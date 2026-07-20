@@ -497,7 +497,6 @@ async function schedulePaymentReminders(supabase: ReturnType<typeof createClient
     { days: 3, evento: "vencimento_3dias" },
     { days: 0, evento: "vencimento_dia" },
     { days: -1, evento: "vencimento_1dia" },
-    { days: -7, evento: "vencimento_7dias" },
   ];
 
   const candidates: Array<{
@@ -590,7 +589,6 @@ async function reconcileMisscheduledReminders(
     "vencimento_3dias",
     "vencimento_dia",
     "vencimento_1dia",
-    "vencimento_7dias",
   ];
 
   const { data: templates } = await supabase

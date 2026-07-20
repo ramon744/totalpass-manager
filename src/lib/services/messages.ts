@@ -11,6 +11,10 @@ import {
 } from "@/lib/services/reminder-schedule";
 import type { ReminderWindowOptions } from "@/lib/services/reminder-schedule";
 import { getCronConfig, getReminderWindow } from "@/lib/cron-config";
+import {
+  alertAdminIfUazapiOffline,
+  markUazapiOnline,
+} from "@/lib/services/uazapi-health";
 import { normalizePhone } from "@/lib/utils";
 import type { Mensagem, TipoEnvioMensagem } from "@/types/database";
 
@@ -179,7 +183,6 @@ const REMINDER_EVENTOS = [
   "vencimento_3dias",
   "vencimento_dia",
   "vencimento_1dia",
-  "vencimento_7dias",
 ] as const;
 
 /**
@@ -226,10 +229,41 @@ export async function processMessageQueue(supabase: SupabaseClient) {
     return { processed: 0, pending: await countDueMessages(supabase, now), error: "Uazapi não configurado" };
   }
 
+  const client = new UazapiClient(uazapiConfig);
+  const readiness = await client.isReadyToSend();
+  if (!readiness.ready) {
+    const pendingCount = await countDueMessages(supabase, now);
+    let adminAlert: { sent: boolean; reason?: string } | undefined;
+    try {
+      adminAlert = await alertAdminIfUazapiOffline(supabase, {
+        status: readiness.status,
+        error: readiness.error,
+        pendingMessages: pendingCount,
+      });
+    } catch (e) {
+      adminAlert = {
+        sent: false,
+        reason: e instanceof Error ? e.message : String(e),
+      };
+    }
+    return {
+      processed: 0,
+      pending: pendingCount,
+      skipped: true,
+      reason: "uazapi_offline",
+      uazapiStatus: readiness.status,
+      adminAlert,
+      error:
+        readiness.error ||
+        `Uazapi não conectada (status: ${readiness.status}). Fila preservada sem gastar tentativas.`,
+    };
+  }
+
+  await markUazapiOnline(supabase);
+
   const dueBefore = await countDueMessages(supabase, now);
   const sendIntervalMs = resolveSendIntervalMs(dueBefore, MESSAGE_SEND_INTERVAL_MS);
 
-  const client = new UazapiClient(uazapiConfig);
   let processed = 0;
   const batch = pendentes ?? [];
   const shouldThrottle = batch.length >= 2;
@@ -372,11 +406,11 @@ export async function schedulePaymentReminders(
     immediate: options?.immediate ?? options?.window?.immediate ?? false,
   };
 
+  // Sem vencimento_7dias: com carência 5 + aviso 2, o 7º dia já é desvínculo.
   const offsets = [
     { days: 3, evento: "vencimento_3dias" },
     { days: 0, evento: "vencimento_dia" },
     { days: -1, evento: "vencimento_1dia" },
-    { days: -7, evento: "vencimento_7dias" },
   ];
 
   type ReminderCandidate = {

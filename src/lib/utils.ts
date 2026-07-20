@@ -73,13 +73,27 @@ export function maskCpfInput(value: string) {
 }
 
 export function maskPhoneInput(value: string) {
-  const digits = value.replace(/\D/g, "").slice(0, 11);
+  let digits = value.replace(/\D/g, "");
+  // Aceita 55 no começo, mas a máscara visual fica (DD) 9XXXX-XXXX
+  if (digits.startsWith("55") && digits.length >= 12) {
+    digits = digits.slice(2);
+  }
+  digits = digits.slice(0, 11);
   if (digits.length <= 2) return digits;
   if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
   if (digits.length <= 10) {
     return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
   }
   return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+}
+
+/** Normaliza e-mail digitado (minúsculas, sem espaços, só caracteres válidos). */
+export function maskEmailInput(value: string) {
+  return value
+    .replace(/\s/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9.@_+-]/g, "")
+    .slice(0, 160);
 }
 
 export function maskCurrencyInput(value: string) {

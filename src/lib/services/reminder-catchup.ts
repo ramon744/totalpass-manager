@@ -27,8 +27,7 @@ export function resolveCatchUpReminderEvent(
   if (diffDays === 1 || diffDays === 2) return null;
   if (diffDays === 0) return "vencimento_dia";
   if (diffDays === -1) return "vencimento_1dia";
-  if (diffDays >= -6 && diffDays <= -2) return null;
-  if (diffDays <= -7) return "vencimento_7dias";
+  // Sem vencimento_7dias: a partir da carência entra o aviso de desvínculo.
   return null;
 }
 

@@ -1,6 +1,8 @@
 export type UserRole = "admin" | "operador" | "visualizador";
 export type PerfilBeneficiario = "titular" | "dependente";
 export type StatusTotalpass = "ativo" | "elegivel" | "inativo";
+/** Origem da cobrança recorrente do titular. Dependente usa `nenhum`. */
+export type GatewayPagamento = "asaas" | "infinity" | "nenhum";
 export type ImportacaoStatus = "processando" | "concluido" | "erro";
 export type MensagemStatus = "pendente" | "enviando" | "enviado" | "erro";
 export type TipoEnvioMensagem =
@@ -33,12 +35,19 @@ export interface Beneficiario {
   data_aderido_totalpass: string | null;
   data_cadastro_sistema: string;
   asaas_customer_id: string | null;
+  gateway_pagamento: GatewayPagamento;
+  infinity_customer_id: string | null;
+  infinity_subscription_slug: string | null;
   observacoes: string | null;
   cobrar_na_assinatura: boolean;
   cobranca_manual_desativada_em: string | null;
   cobranca_manual_desativada_por: string | null;
   cobranca_manual_motivo: string | null;
   ultima_importacao_id: string | null;
+  checkins_30d: number | null;
+  checkins_periodo_inicio: string | null;
+  checkins_periodo_fim: string | null;
+  checkins_atualizado_em: string | null;
   created_at: string;
   updated_at: string;
   dependentes?: Beneficiario[];
@@ -272,6 +281,121 @@ export interface ConfigCron {
   janela_fim?: number;
   /** Fim da janela — minuto (Brasília). */
   janela_fim_minuto?: number;
+}
+
+/** Configuração da ponte extensão ↔ TotalPass (inativação por inadimplência). */
+export interface ConfigBridge {
+  dias_carencia?: number;
+  dias_aviso_final?: number;
+  heartbeat_ttl_minutos?: number;
+  admin_telefone?: string;
+  /** E-mail do admin para alerta de bridge offline (via Resend). */
+  admin_email?: string;
+  alerta_offline_intervalo_horas?: number;
+  teto_diario_inativacoes?: number;
+  notificar_cancelamento_asaas?: boolean;
+  /**
+   * Se false, o cron não avisa desvínculo automático nem enfileira jobs.
+   * Manager/Asaas/WhatsApp de cobrança continuam normais (modo manual).
+   */
+  automacao_inativacao_ativa?: boolean;
+}
+
+export const DEFAULT_BRIDGE_CONFIG: Required<ConfigBridge> = {
+  dias_carencia: 5,
+  dias_aviso_final: 2,
+  heartbeat_ttl_minutos: 15,
+  admin_telefone: "",
+  admin_email: "",
+  alerta_offline_intervalo_horas: 2,
+  teto_diario_inativacoes: 20,
+  notificar_cancelamento_asaas: true,
+  automacao_inativacao_ativa: true,
+};
+
+/**
+ * InfinitePay (extensão + desvínculo). Tudo off/dry-run por padrão
+ * para não interferir no Asaas até você ligar.
+ */
+export interface ConfigInfinity {
+  /** Extensão Infinity pode fazer heartbeat/sync/jobs de escrita. */
+  ativa?: boolean;
+  /** Cron de aviso/desvínculo por atraso Infinity (fase 4). */
+  automacao_desvinculo_ativa?: boolean;
+  /** Se true, jobs de escrita não chamam a API Infinity de verdade. */
+  dry_run?: boolean;
+  heartbeat_ttl_minutos?: number;
+  alerta_offline_intervalo_horas?: number;
+  teto_diario_operacoes?: number;
+  admin_telefone?: string;
+  admin_email?: string;
+  /** Segredo da extensão (ou use INFINITY_BRIDGE_SECRET no env). */
+  bridge_secret?: string;
+}
+
+export const DEFAULT_INFINITY_CONFIG: Required<ConfigInfinity> = {
+  ativa: false,
+  automacao_desvinculo_ativa: false,
+  dry_run: true,
+  heartbeat_ttl_minutos: 15,
+  alerta_offline_intervalo_horas: 2,
+  teto_diario_operacoes: 20,
+  admin_telefone: "",
+  admin_email: "",
+  bridge_secret: "",
+};
+
+export type BridgeJobTipo = "inactivate_totalpass";
+export type BridgeJobStatus =
+  | "pending"
+  | "claimed"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface BridgeInstance {
+  id: string;
+  installation_id: string;
+  extension_version: string | null;
+  last_seen_at: string;
+  session_ok: boolean;
+  session_email: string | null;
+  pending_jobs_count: number;
+  last_offline_alert_at: string | null;
+  last_error: string | null;
+  last_health_ok: boolean;
+  created_at: string;
+}
+
+export interface BridgeJob {
+  id: string;
+  tipo: BridgeJobTipo;
+  status: BridgeJobStatus;
+  beneficiario_id: string;
+  cpf: string;
+  motivo: string;
+  payload: Record<string, unknown>;
+  idempotency_key: string;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  claimed_at: string | null;
+  claimed_by: string | null;
+  run_after: string;
+  completed_at: string | null;
+  result: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DesvinculoAviso {
+  id: string;
+  beneficiario_id: string;
+  cobranca_id: string;
+  avisado_em: string;
+  data_limite: string;
+  created_at: string;
 }
 
 export const DEFAULT_CRON_CONFIG: Required<

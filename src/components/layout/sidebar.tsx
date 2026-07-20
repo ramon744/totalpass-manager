@@ -16,6 +16,7 @@ import {
   Settings,
   Menu,
   X,
+  ScanSearch,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
@@ -24,6 +25,7 @@ const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/beneficiarios", label: "Beneficiários", icon: Users },
   { href: "/pre-cadastros", label: "Pré-cadastros", icon: UserPlus },
+  { href: "/auditoria-whatsapp", label: "Auditorias", icon: ScanSearch },
   { href: "/importacao", label: "Importação", icon: Upload },
   { href: "/provedores", label: "Provedores", icon: Building2 },
   { href: "/financeiro", label: "Financeiro", icon: Wallet },

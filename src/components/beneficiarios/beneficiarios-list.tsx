@@ -2,7 +2,7 @@
 
 import { useMemo, useState, Fragment, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Search, ChevronDown, ChevronRight, Plus, UserPlus, Pencil, CreditCard, Trash2 } from "lucide-react";
+import { Search, ChevronDown, ChevronRight, Plus, UserPlus, Pencil, CreditCard, Trash2, Unlink } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -144,6 +144,11 @@ export function BeneficiariosList({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   const [notificarCancelamento, setNotificarCancelamento] = useState(true);
+  const [desvinculoOpen, setDesvinculoOpen] = useState(false);
+  const [desvinculoTarget, setDesvinculoTarget] = useState<Beneficiario>();
+  const [desvinculoConfirmouHr, setDesvinculoConfirmouHr] = useState(false);
+  const [desvinculoNotificar, setDesvinculoNotificar] = useState(false);
+  const [desvinculando, setDesvinculando] = useState(false);
 
   const filtered = titulares;
 
@@ -358,6 +363,54 @@ export function BeneficiariosList({
     return (
       beneficiario.perfil === "titular" && !assinaturaIds.has(beneficiario.id)
     );
+  }
+
+  function podeDesvinculoManual(beneficiario: Beneficiario) {
+    if (beneficiario.perfil !== "titular") return false;
+    return (
+      beneficiario.status_totalpass === "ativo" ||
+      beneficiario.status_totalpass === "elegivel" ||
+      assinaturaIds.has(beneficiario.id)
+    );
+  }
+
+  function openDesvinculoManual(beneficiario: Beneficiario) {
+    setDesvinculoTarget(beneficiario);
+    setDesvinculoConfirmouHr(false);
+    setDesvinculoNotificar(assinaturaIds.has(beneficiario.id));
+    setDesvinculoOpen(true);
+  }
+
+  async function handleDesvinculoManual() {
+    if (!desvinculoTarget) return;
+    setDesvinculando(true);
+    try {
+      const res = await fetch(
+        `/api/beneficiarios/${desvinculoTarget.id}/desvinculo-manual`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            confirmouHr: desvinculoConfirmouHr,
+            notificar: desvinculoNotificar,
+          }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Erro no desvínculo manual");
+      toast.success(
+        `Desvinculado: ${data.assinaturasCanceladas ?? 0} assinatura(s) cancelada(s)`
+      );
+      setDesvinculoOpen(false);
+      setDesvinculoTarget(undefined);
+      router.refresh();
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Erro no desvínculo manual"
+      );
+    } finally {
+      setDesvinculando(false);
+    }
   }
 
   function handleSuccess() {
@@ -690,6 +743,17 @@ export function BeneficiariosList({
                       >
                         <Pencil className="h-4 w-4" />
                       </Button>
+                      {podeDesvinculoManual(t) && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title="Desvínculo manual (Manager + Asaas)"
+                          className="text-amber-700 hover:text-amber-800 dark:text-amber-400"
+                          onClick={() => openDesvinculoManual(t)}
+                        >
+                          <Unlink className="h-4 w-4" />
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"
@@ -851,6 +915,72 @@ export function BeneficiariosList({
         provedoresById={provedoresById}
         onSuccess={handleSuccess}
       />
+
+      <Dialog open={desvinculoOpen} onOpenChange={setDesvinculoOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Desvínculo manual</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600 dark:text-slate-400">
+              Use quando a extensão ou o TotalPass HR não estiverem disponíveis.
+              Isto marca <strong>{desvinculoTarget?.nome}</strong> como inativo
+              no Manager, cancela jobs da ponte e cancela a assinatura no Asaas.
+              O cadastro permanece (não é exclusão).
+            </p>
+            <p className="text-sm text-amber-700 dark:text-amber-300">
+              O TotalPass HR não é alterado por aqui. Inative/remova o vínculo
+              lá manualmente (ou confirme que já fez) antes de continuar.
+            </p>
+            <label className="flex items-start gap-2 text-sm text-slate-600 dark:text-slate-400">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={desvinculoConfirmouHr}
+                onChange={(e) => setDesvinculoConfirmouHr(e.target.checked)}
+                disabled={desvinculando}
+              />
+              <span>
+                Confirmo que já tratei (ou vou tratar) este titular no TotalPass
+                HR
+              </span>
+            </label>
+            {desvinculoTarget &&
+              assinaturaIds.has(desvinculoTarget.id) && (
+                <label className="flex items-start gap-2 text-sm text-slate-600 dark:text-slate-400">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={desvinculoNotificar}
+                    onChange={(e) => setDesvinculoNotificar(e.target.checked)}
+                    disabled={desvinculando}
+                  />
+                  <span>
+                    Notificar por WhatsApp sobre o cancelamento da assinatura
+                  </span>
+                </label>
+              )}
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setDesvinculoOpen(false)}
+                disabled={desvinculando}
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={handleDesvinculoManual}
+                disabled={desvinculando || !desvinculoConfirmouHr}
+              >
+                {desvinculando ? "Desvinculando..." : "Confirmar desvínculo"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>

@@ -84,6 +84,12 @@ export function getBrazilDateString(now = new Date(), offsetDays = 0): string {
   return `${parts.year}-${mm}-${dd}`;
 }
 
+/** Instant UTC do início do dia civil em Brasília (00:00 BRT). */
+export function getBrazilDayStartUtcIso(now = new Date()): string {
+  const parts = getBrazilParts(now);
+  return buildBrazilDate(parts.year, parts.month, parts.day, 0, 0, 0).toISOString();
+}
+
 /**
  * Distribui horários de envio ao longo da janela diária (Brasília),
  * evitando disparo em massa no mesmo minuto.

@@ -53,8 +53,7 @@ function resolveCatchUpReminderEvent(
   if (diffDays === 1 || diffDays === 2) return null;
   if (diffDays === 0) return "vencimento_dia";
   if (diffDays === -1) return "vencimento_1dia";
-  if (diffDays >= -6 && diffDays <= -2) return null;
-  if (diffDays <= -7) return "vencimento_7dias";
+  // Sem vencimento_7dias: a partir da carência entra o aviso de desvínculo.
   return null;
 }
 
@@ -581,6 +580,34 @@ Deno.serve(async (req) => {
               valor: Number(payment.value).toFixed(2).replace(".", ","),
             },
           });
+
+          // Cancela fila de inativação TotalPass se o pagamento regularizou.
+          try {
+            if (existing?.id) {
+              await supabase
+                .from("bridge_jobs")
+                .update({
+                  status: "cancelled",
+                  completed_at: new Date().toISOString(),
+                  last_error: "pagamento_confirmado",
+                  updated_at: new Date().toISOString(),
+                })
+                .in("status", ["pending", "claimed", "running"])
+                .eq("payload->>cobranca_id", existing.id);
+            }
+            await supabase
+              .from("bridge_jobs")
+              .update({
+                status: "cancelled",
+                completed_at: new Date().toISOString(),
+                last_error: "pagamento_confirmado",
+                updated_at: new Date().toISOString(),
+              })
+              .eq("beneficiario_id", beneficiario.id)
+              .in("status", ["pending", "claimed", "running"]);
+          } catch {
+            // Não bloqueia o webhook.
+          }
         }
 
         if (event === "PAYMENT_OVERDUE") {

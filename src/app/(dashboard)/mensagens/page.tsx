@@ -1,5 +1,6 @@
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { MensagensPanel } from "@/components/mensagens/mensagens-panel";
+import { getBridgeConfig } from "@/lib/services/bridge-jobs";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { redirect } from "next/navigation";
@@ -105,6 +106,7 @@ export default async function MensagensPage({ searchParams }: PageProps) {
     { data: templates },
     { data: clientes },
     { data: pessoas },
+    bridge,
   ] = await Promise.all([
     mensagensQuery.range(from, to),
     supabase.from("mensagem_templates").select("*").order("evento"),
@@ -117,6 +119,7 @@ export default async function MensagensPage({ searchParams }: PageProps) {
       .from("beneficiarios")
       .select("id, nome, telefone")
       .order("nome"),
+    getBridgeConfig(supabase),
   ]);
 
   const total = count ?? 0;
@@ -142,6 +145,10 @@ export default async function MensagensPage({ searchParams }: PageProps) {
           pageSize: MENSAGENS_PAGE_SIZE,
         }}
         filtros={{ de, ate, pessoa: pessoaValida, q }}
+        bridgePrazos={{
+          dias_carencia: bridge.dias_carencia,
+          dias_aviso_final: bridge.dias_aviso_final,
+        }}
       />
     </DashboardShell>
   );

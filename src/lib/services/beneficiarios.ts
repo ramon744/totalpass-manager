@@ -14,7 +14,14 @@ import {
 import { normalizeCpf } from "@/lib/utils";
 import { isValidCpf } from "@/lib/validators/cpf";
 import { isValidPhone, sanitizePhone } from "@/lib/validators/phone";
-import type { Beneficiario, PerfilBeneficiario, StatusTotalpass } from "@/types/database";
+import type {
+  Beneficiario,
+  GatewayPagamento,
+  PerfilBeneficiario,
+  StatusTotalpass,
+} from "@/types/database";
+
+const GATEWAYS: GatewayPagamento[] = ["asaas", "infinity", "nenhum"];
 
 export interface BeneficiarioInput {
   nome: string;
@@ -28,6 +35,19 @@ export interface BeneficiarioInput {
   plano?: string | null;
   data_aderido_totalpass?: string | null;
   observacoes?: string | null;
+  /** Só titular. Dependente força `nenhum`. Default titular: `asaas`. */
+  gateway_pagamento?: GatewayPagamento | null;
+  infinity_customer_id?: string | null;
+  infinity_subscription_slug?: string | null;
+}
+
+function normalizeGateway(
+  perfil: PerfilBeneficiario,
+  gateway?: GatewayPagamento | null
+): GatewayPagamento {
+  if (perfil === "dependente") return "nenhum";
+  if (gateway && GATEWAYS.includes(gateway)) return gateway;
+  return "asaas";
 }
 
 function validateInput(input: BeneficiarioInput) {
@@ -44,6 +64,19 @@ function validateInput(input: BeneficiarioInput) {
   if (input.perfil === "titular" && input.titular_id) {
     throw new Error("Titular não pode ter vínculo com outro titular");
   }
+  if (
+    input.gateway_pagamento !== undefined &&
+    input.gateway_pagamento !== null &&
+    !GATEWAYS.includes(input.gateway_pagamento)
+  ) {
+    throw new Error("Gateway de pagamento inválido");
+  }
+
+  // undefined = não alterar no update; create aplica default depois.
+  const gatewayProvided = input.gateway_pagamento !== undefined;
+  const infinityCustomerProvided = input.infinity_customer_id !== undefined;
+  const infinitySlugProvided = input.infinity_subscription_slug !== undefined;
+
   return {
     ...input,
     cpf,
@@ -55,6 +88,19 @@ function validateInput(input: BeneficiarioInput) {
     data_aderido_totalpass: input.data_aderido_totalpass || null,
     titular_id: input.perfil === "dependente" ? input.titular_id : null,
     provedor_id: input.provedor_id || null,
+    gateway_pagamento: gatewayProvided
+      ? normalizeGateway(input.perfil, input.gateway_pagamento)
+      : undefined,
+    infinity_customer_id: !infinityCustomerProvided
+      ? undefined
+      : input.perfil === "titular"
+        ? input.infinity_customer_id?.trim() || null
+        : null,
+    infinity_subscription_slug: !infinitySlugProvided
+      ? undefined
+      : input.perfil === "titular"
+        ? input.infinity_subscription_slug?.trim() || null
+        : null,
   };
 }
 
@@ -112,9 +158,14 @@ export async function createBeneficiario(
       } as Beneficiario),
     });
 
+  const gateway_pagamento =
+    data.gateway_pagamento ??
+    normalizeGateway(data.perfil, null);
+
   let asaasCustomerId: string | null = null;
   let asaasAviso: string | null = null;
-  if (data.perfil === "titular") {
+  // Só cria cliente Asaas se o titular for do trilho Asaas (não Infinity).
+  if (data.perfil === "titular" && gateway_pagamento === "asaas") {
     const asaasConfig = await getAsaasConfig(supabase);
     if (asaasConfig?.api_key) {
       try {
@@ -149,6 +200,9 @@ export async function createBeneficiario(
       data_aderido_totalpass: data.data_aderido_totalpass,
       observacoes: data.observacoes,
       asaas_customer_id: asaasCustomerId,
+      gateway_pagamento,
+      infinity_customer_id: data.infinity_customer_id ?? null,
+      infinity_subscription_slug: data.infinity_subscription_slug ?? null,
       cobrar_na_assinatura: data.perfil === "dependente" ? cobrarNaAssinatura : true,
       data_cadastro_sistema: new Date().toISOString(),
     })
@@ -166,6 +220,7 @@ export async function createBeneficiario(
       perfil: data.perfil,
       cpf: data.cpf,
       provedor_id: provedorId,
+      gateway_pagamento,
       asaas_aviso: asaasAviso,
     },
   });
@@ -234,37 +289,74 @@ export async function updateBeneficiario(
 
   if (!provedor) throw new Error("Provedor informado não encontrado");
 
+  const gateway_pagamento =
+    data.perfil === "dependente"
+      ? "nenhum"
+      : (data.gateway_pagamento ??
+        (current.gateway_pagamento as GatewayPagamento | null) ??
+        "asaas");
+
+  const patch: Record<string, unknown> = {
+    nome: data.nome,
+    cpf: data.cpf,
+    telefone: data.telefone,
+    email: data.email,
+    perfil: data.perfil,
+    titular_id: data.titular_id,
+    provedor_id: provedorId,
+    status_totalpass: data.status_totalpass,
+    plano: data.plano,
+    data_aderido_totalpass: data.data_aderido_totalpass,
+    observacoes: data.observacoes,
+    gateway_pagamento,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (data.infinity_customer_id !== undefined) {
+    patch.infinity_customer_id = data.infinity_customer_id;
+  } else if (data.perfil === "dependente") {
+    patch.infinity_customer_id = null;
+  }
+
+  if (data.infinity_subscription_slug !== undefined) {
+    patch.infinity_subscription_slug = data.infinity_subscription_slug;
+  } else if (data.perfil === "dependente") {
+    patch.infinity_subscription_slug = null;
+  }
+
   const { data: updated, error } = await supabase
     .from("beneficiarios")
-    .update({
-      nome: data.nome,
-      cpf: data.cpf,
-      telefone: data.telefone,
-      email: data.email,
-      perfil: data.perfil,
-      titular_id: data.titular_id,
-      provedor_id: provedorId,
-      status_totalpass: data.status_totalpass,
-      plano: data.plano,
-      data_aderido_totalpass: data.data_aderido_totalpass,
-      observacoes: data.observacoes,
-      updated_at: new Date().toISOString(),
-    })
+    .update(patch)
     .eq("id", id)
     .select()
     .single();
 
   if (error) throw new Error(error.message);
 
+  const provedorMudou =
+    data.perfil === "titular" && current.provedor_id !== provedorId;
+
+  // Troca de provedor: dependentes acompanham; fatura Asaas NÃO é recalculada.
+  if (provedorMudou) {
+    await cascadeProvedorToDependents(supabase, id, provedorId);
+  }
+
   await createLog(supabase, {
     usuario_id: userId,
     acao: "beneficiario_atualizado",
     entidade: "beneficiarios",
     entidade_id: id,
-    payload: { cpf: data.cpf, provedor_id: provedorId },
+    payload: {
+      cpf: data.cpf,
+      provedor_id: provedorId,
+      provedor_anterior: provedorMudou ? current.provedor_id : undefined,
+      gateway_pagamento,
+      fatura_inalterada_por_provedor: provedorMudou || undefined,
+    },
   });
 
   const titularesParaReconciliar = new Set<string>();
+  // Não reconciliar fatura só por troca de provedor do titular.
   if (data.perfil === "dependente" && data.titular_id) {
     titularesParaReconciliar.add(data.titular_id);
   }
@@ -284,6 +376,89 @@ export async function updateBeneficiario(
   }
 
   return updated;
+}
+
+/**
+ * Troca o provedor do titular e dos dependentes.
+ * Não cria/cancela assinatura nem recalcula fatura Asaas — só o vínculo organizacional.
+ */
+export async function applyProvedorChange(
+  supabase: SupabaseClient,
+  params: {
+    titularId: string;
+    provedorId: string;
+    userId?: string;
+    origem?: string;
+  }
+) {
+  const now = new Date().toISOString();
+  const { data: titular, error: titErr } = await supabase
+    .from("beneficiarios")
+    .select("id, perfil, provedor_id, nome, cpf")
+    .eq("id", params.titularId)
+    .single();
+
+  if (titErr || !titular) {
+    throw new Error(titErr?.message ?? "Titular não encontrado");
+  }
+  if (titular.perfil !== "titular") {
+    throw new Error("Só titulares podem mudar de provedor diretamente");
+  }
+  if (titular.provedor_id === params.provedorId) {
+    return { changed: false, dependentes: 0 };
+  }
+
+  const { data: provedor } = await supabase
+    .from("provedores")
+    .select("id, nome")
+    .eq("id", params.provedorId)
+    .maybeSingle();
+  if (!provedor) throw new Error("Provedor informado não encontrado");
+
+  const { error: upTitular } = await supabase
+    .from("beneficiarios")
+    .update({ provedor_id: params.provedorId, updated_at: now })
+    .eq("id", params.titularId);
+  if (upTitular) throw new Error(upTitular.message);
+
+  const { data: deps, error: depErr } = await supabase
+    .from("beneficiarios")
+    .update({ provedor_id: params.provedorId, updated_at: now })
+    .eq("titular_id", params.titularId)
+    .eq("perfil", "dependente")
+    .select("id");
+  if (depErr) throw new Error(depErr.message);
+
+  await createLog(supabase, {
+    usuario_id: params.userId,
+    acao: "beneficiario_provedor_alterado",
+    entidade: "beneficiarios",
+    entidade_id: params.titularId,
+    payload: {
+      de: titular.provedor_id,
+      para: params.provedorId,
+      provedor_nome: provedor.nome,
+      dependentes: deps?.length ?? 0,
+      origem: params.origem ?? "manual",
+      fatura_inalterada: true,
+    },
+  });
+
+  return { changed: true, dependentes: deps?.length ?? 0 };
+}
+
+/** Só propaga provedor do titular → dependentes (sem reconciliar fatura). */
+export async function cascadeProvedorToDependents(
+  supabase: SupabaseClient,
+  titularId: string,
+  provedorId: string
+) {
+  const now = new Date().toISOString();
+  await supabase
+    .from("beneficiarios")
+    .update({ provedor_id: provedorId, updated_at: now })
+    .eq("titular_id", titularId)
+    .eq("perfil", "dependente");
 }
 
 async function removeBeneficiarioLocal(

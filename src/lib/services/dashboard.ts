@@ -236,6 +236,17 @@ export async function handleAsaasWebhook(
           valor: payment.value.toFixed(2).replace(".", ","),
         },
       });
+
+      try {
+        const { cancelBridgeJobsForBeneficiario, cancelBridgeJobsForCobranca } =
+          await import("@/lib/services/bridge-jobs");
+        if (existing?.id) {
+          await cancelBridgeJobsForCobranca(supabase, existing.id);
+        }
+        await cancelBridgeJobsForBeneficiario(supabase, beneficiario.id);
+      } catch {
+        // Não bloqueia o webhook se a fila da bridge falhar.
+      }
     }
 
     if (event === "PAYMENT_OVERDUE") {

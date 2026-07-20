@@ -4,10 +4,7 @@ import { AsaasClient } from "@/lib/asaas/client";
 import { getAsaasConfig } from "@/lib/config";
 import { createLog } from "@/lib/logger";
 import { findOrCreateProvedor, findProvedorByNomeExato, normalizeNomeProvedor } from "@/lib/services/provedores";
-import {
-  cancelActiveSubscriptionsForBeneficiario,
-  reconcileDependentBillingForTitular,
-} from "@/lib/services/subscriptions";
+import { reconcileDependentBillingForTitular } from "@/lib/services/subscriptions";
 import {
   isDependenteCobravelPorStatus,
   provedorCobraDependentes,
@@ -18,6 +15,7 @@ import {
 import { normalizeCpf } from "@/lib/utils";
 import { isValidCpf } from "@/lib/validators/cpf";
 import { sanitizePhone } from "@/lib/validators/phone";
+import { cascadeProvedorToDependents } from "@/lib/services/beneficiarios";
 import type {
   Beneficiario,
   ImportacaoErro,
@@ -707,13 +705,30 @@ export async function processImport(
         erros.push({ linha, cpf, nome: row.nome, mensagem: error.message });
       } else {
         atualizados++;
+        const provedorMudou =
+          perfil === "titular" &&
+          !!provedorId &&
+          existing.provedor_id !== provedorId;
+        if (provedorMudou && provedorId) {
+          // Sync/extensão trocou a empresa: atualiza vínculo, sem recalcular fatura.
+          try {
+            await cascadeProvedorToDependents(supabase, existing.id, provedorId);
+          } catch {
+            // Não bloqueia a importação.
+          }
+        }
         if (perfil === "titular") {
           titularesMap.set(cpf, existing.id);
           titularesProvedorMap.set(cpf, provedorId);
           if (status === "inativo" && existing.status_totalpass !== "inativo") {
             titularesInativados.add(existing.id);
           } else if (status !== "inativo") {
-            titularesAfetados.add(existing.id);
+            // Troca só de provedor (status igual) NÃO entra no reconcile de fatura.
+            const soProvedor =
+              provedorMudou && existing.status_totalpass === status;
+            if (!soProvedor) {
+              titularesAfetados.add(existing.id);
+            }
           }
         }
       }
@@ -862,24 +877,22 @@ export async function processImport(
     });
   }
 
+  // Inativo no TotalPass (sumiu do sync ou status inativo) NÃO cancela Asaas.
+  // Mantém cobrança: com titular inativo o reconcile fica só no valor do titular
+  // (dependentes inativos/ausentes saem da fatura). Cancelamento real = inadimplência.
   for (const titularId of titularesInativados) {
-    try {
-      await cancelActiveSubscriptionsForBeneficiario(supabase, titularId, {
-        userId: params.userId,
-        notificar: false,
-        motivo: "titular_inativado_importacao",
-      });
-    } catch {
-      // Importação concluída; cancelamento pode ser feito manualmente depois.
-    }
+    titularesAfetados.add(titularId);
   }
 
   for (const titularId of titularesAfetados) {
-    if (titularesInativados.has(titularId)) continue;
     try {
       await reconcileDependentBillingForTitular(supabase, titularId, {
         userId: params.userId,
-        motivo: "importação de planilha",
+        motivo: titularesInativados.has(titularId)
+          ? "titular_ausente_ou_inativo_no_sync"
+          : "importação de planilha",
+        // Evita spam WhatsApp em sync em massa; inadimplência notifica no fluxo próprio.
+        notificar: false,
       });
     } catch {
       // Não bloqueia a importação; a assinatura pode ser reconciliada manualmente depois.
