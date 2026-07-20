@@ -186,9 +186,12 @@ export type InfinityCustomerSyncItem = {
 };
 
 /**
- * Upsert do sync da extensão. Liga titular por infinity_customer_id ou CPF
- * quando gateway = infinity. Não cria beneficiário nem cancela nada.
- * Após sync completo (lista não truncada), remove clientes que sumiram da Infinity.
+ * Upsert do sync da extensão.
+ * - Liga titular por infinity_customer_id ou CPF.
+ * - Gateway automático: existe na Infinity → infinity; sumiu do sync → asaas.
+ * - Não cria beneficiário, não cria/cancela cobrança Asaas/Infinity.
+ * Após sync completo (lista não truncada), remove clientes que sumiram da Infinity
+ * e rebaixa órfãos para gateway asaas.
  */
 export async function syncInfinityCustomers(
   supabase: SupabaseClient,
@@ -201,6 +204,8 @@ export async function syncInfinityCustomers(
   let upserted = 0;
   let linked = 0;
   let removed = 0;
+  let gatewayToInfinity = 0;
+  let gatewayToAsaas = 0;
   const errors: string[] = [];
   const syncedIds: string[] = [];
 
@@ -211,36 +216,59 @@ export async function syncInfinityCustomers(
     const document = item.documentNumber
       ? String(item.documentNumber).replace(/\D/g, "")
       : null;
+    const slug = item.infinitySubscriptionSlug?.trim() || null;
 
     let beneficiarioId: string | null = null;
 
     const { data: byInfinity } = await supabase
       .from("beneficiarios")
-      .select("id")
+      .select("id, gateway_pagamento")
       .eq("infinity_customer_id", customerId)
       .eq("perfil", "titular")
       .maybeSingle();
 
     if (byInfinity?.id) {
       beneficiarioId = byInfinity.id;
-    } else if (document) {
+      if (byInfinity.gateway_pagamento !== "infinity" || slug) {
+        const { error: upErr } = await supabase
+          .from("beneficiarios")
+          .update({
+            gateway_pagamento: "infinity",
+            infinity_subscription_slug: slug,
+            updated_at: now,
+          })
+          .eq("id", byInfinity.id);
+        if (upErr) {
+          errors.push(`${customerId}: gateway ${upErr.message}`);
+        } else if (byInfinity.gateway_pagamento !== "infinity") {
+          gatewayToInfinity++;
+        }
+      }
+    } else if (document && document.length === 11) {
       const { data: byCpf } = await supabase
         .from("beneficiarios")
-        .select("id, gateway_pagamento")
+        .select("id, gateway_pagamento, infinity_customer_id")
         .eq("cpf", document)
         .eq("perfil", "titular")
         .maybeSingle();
-      if (byCpf?.id && byCpf.gateway_pagamento === "infinity") {
+
+      if (byCpf?.id) {
         beneficiarioId = byCpf.id;
-        await supabase
+        const wasInfinity = byCpf.gateway_pagamento === "infinity";
+        const { error: upErr } = await supabase
           .from("beneficiarios")
           .update({
+            gateway_pagamento: "infinity",
             infinity_customer_id: customerId,
-            infinity_subscription_slug:
-              item.infinitySubscriptionSlug?.trim() || null,
+            infinity_subscription_slug: slug,
             updated_at: now,
           })
           .eq("id", byCpf.id);
+        if (upErr) {
+          errors.push(`${customerId}: link-cpf ${upErr.message}`);
+        } else if (!wasInfinity) {
+          gatewayToInfinity++;
+        }
       }
     }
 
@@ -249,8 +277,7 @@ export async function syncInfinityCustomers(
     const { error } = await supabase.from("infinity_customer_status").upsert(
       {
         infinity_customer_id: customerId,
-        infinity_subscription_slug:
-          item.infinitySubscriptionSlug?.trim() || null,
+        infinity_subscription_slug: slug,
         nome: item.nome?.trim() || null,
         document_number: document,
         email: item.email?.trim() || null,
@@ -275,7 +302,6 @@ export async function syncInfinityCustomers(
   }
 
   // Sync completo: remove quem não veio nesta leva (excluídos na InfinitePay).
-  // Todos os upserts desta leva usam o mesmo `now` em synced_at.
   if (!truncated && syncedIds.length > 0) {
     const { error: delErr, count } = await supabase
       .from("infinity_customer_status")
@@ -285,6 +311,50 @@ export async function syncInfinityCustomers(
       errors.push(`prune-delete: ${delErr.message}`);
     } else {
       removed = count ?? 0;
+    }
+
+    // Titulares órfãos (tinham Infinity e sumiram do sync) → Asaas.
+    // Quem ainda está em infinity_customer_status permanece Infinity.
+    const { data: stillLinked } = await supabase
+      .from("infinity_customer_status")
+      .select("beneficiario_id")
+      .not("beneficiario_id", "is", null);
+
+    const keepIds = new Set(
+      (stillLinked ?? [])
+        .map((r) => r.beneficiario_id as string | null)
+        .filter((id): id is string => Boolean(id))
+    );
+
+    const { data: infinityTitulares, error: listErr } = await supabase
+      .from("beneficiarios")
+      .select("id, infinity_customer_id")
+      .eq("perfil", "titular")
+      .or("gateway_pagamento.eq.infinity,infinity_customer_id.not.is.null");
+
+    if (listErr) {
+      errors.push(`demote-list: ${listErr.message}`);
+    } else {
+      const orphans = (infinityTitulares ?? []).filter(
+        (t) => !keepIds.has(t.id)
+      );
+      for (const orphan of orphans) {
+        const { error: demoteErr } = await supabase
+          .from("beneficiarios")
+          .update({
+            gateway_pagamento: "asaas",
+            infinity_customer_id: null,
+            infinity_subscription_slug: null,
+            updated_at: now,
+          })
+          .eq("id", orphan.id)
+          .eq("perfil", "titular");
+        if (demoteErr) {
+          errors.push(`demote ${orphan.id}: ${demoteErr.message}`);
+        } else {
+          gatewayToAsaas++;
+        }
+      }
     }
   }
 
@@ -297,6 +367,8 @@ export async function syncInfinityCustomers(
       upserted,
       linked,
       removed,
+      gateway_to_infinity: gatewayToInfinity,
+      gateway_to_asaas: gatewayToAsaas,
       truncated,
       errors: errors.slice(0, 10),
     },
@@ -311,6 +383,8 @@ export async function syncInfinityCustomers(
     upserted,
     linked,
     removed,
+    gatewayToInfinity,
+    gatewayToAsaas,
     overdueCount: overdueCount ?? 0,
     errors: errors.slice(0, 20),
   };

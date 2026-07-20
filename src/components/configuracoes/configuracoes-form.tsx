@@ -721,7 +721,8 @@ export function ConfiguracoesForm({
         <CardHeader>
           <CardTitle>InfinitePay (extensão)</CardTitle>
           <CardDescription>
-            Extensão Infinity Bridge. Sync de clientes ativo (Fase 2). Escrita
+            Extensão Infinity Bridge. Sync de clientes ativo (Fase 2). No sync,
+            titular na Infinity → gateway Infinity; se sumir → Asaas. Escrita
             create/cancel (Fase 3) ainda não liberada — mantenha{" "}
             <strong>dry-run ligado</strong> até validar. Desvínculo automático é
             Fase 4.
