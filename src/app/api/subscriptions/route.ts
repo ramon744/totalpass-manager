@@ -69,6 +69,7 @@ export async function POST(request: NextRequest) {
     success: boolean;
     gateway?: "asaas" | "infinity";
     error?: string;
+    enqueued?: boolean;
   }> = [];
 
   let asaasSuccess = false;
