@@ -39,6 +39,7 @@ export type DesvinculoPendenteManual = {
   vencimento: string;
   statusTotalpass: string;
   temAssinaturaAtiva: boolean;
+  gateway?: "asaas" | "infinity";
 };
 
 /**
@@ -50,6 +51,8 @@ export async function listDesvinculosPendentesManuais(
   limit = 50
 ): Promise<DesvinculoPendenteManual[]> {
   const today = getBrazilDateString(new Date());
+  const out: DesvinculoPendenteManual[] = [];
+  const perSource = Math.max(1, Math.min(50, Math.ceil(limit / 2)));
 
   const { data: avisos, error } = await supabase
     .from("desvinculo_avisos")
@@ -58,11 +61,9 @@ export async function listDesvinculosPendentesManuais(
     )
     .lte("data_limite", today)
     .order("data_limite", { ascending: true })
-    .limit(Math.max(1, Math.min(100, limit)));
+    .limit(perSource);
 
   if (error) throw new Error(error.message);
-
-  const out: DesvinculoPendenteManual[] = [];
 
   for (const aviso of avisos ?? []) {
     const ben = aviso.beneficiario as unknown as {
@@ -103,10 +104,71 @@ export async function listDesvinculosPendentesManuais(
       vencimento: String(cob.vencimento).slice(0, 10),
       statusTotalpass: ben.status_totalpass,
       temAssinaturaAtiva: Boolean(assinaturaAtiva),
+      gateway: "asaas",
     });
   }
 
-  return out;
+  const { data: infAvisos, error: infErr } = await supabase
+    .from("infinity_desvinculo_avisos")
+    .select(
+      "id, beneficiario_id, infinity_customer_id, data_limite, beneficiario:beneficiarios!inner(id, nome, cpf, perfil, status_totalpass, gateway_pagamento)"
+    )
+    .lte("data_limite", today)
+    .order("data_limite", { ascending: true })
+    .limit(perSource);
+
+  if (infErr) throw new Error(infErr.message);
+
+  for (const aviso of infAvisos ?? []) {
+    const ben = aviso.beneficiario as unknown as {
+      id: string;
+      nome: string;
+      cpf: string;
+      perfil: string;
+      status_totalpass: string;
+      gateway_pagamento?: string | null;
+    };
+    if (!ben || ben.perfil !== "titular") continue;
+    if ((ben.gateway_pagamento ?? "asaas") !== "infinity") continue;
+
+    const concluido = await isBeneficiarioDesvinculoConcluido(supabase, ben.id);
+    if (concluido) continue;
+
+    const { data: statusRow } = await supabase
+      .from("infinity_customer_status")
+      .select("amount, due_date, payment_status")
+      .eq("infinity_customer_id", aviso.infinity_customer_id)
+      .maybeSingle();
+
+    if (statusRow?.payment_status !== "overdue") continue;
+
+    const { data: assinaturaAtiva } = await supabase
+      .from("assinaturas")
+      .select("id")
+      .eq("beneficiario_id", ben.id)
+      .eq("status", "ACTIVE")
+      .maybeSingle();
+
+    out.push({
+      avisoId: aviso.id,
+      beneficiarioId: ben.id,
+      nome: ben.nome,
+      cpf: ben.cpf,
+      cobrancaId: `infinity:${aviso.infinity_customer_id}`,
+      dataLimite: aviso.data_limite,
+      valor: statusRow?.amount != null ? Number(statusRow.amount) : 0,
+      vencimento: statusRow?.due_date
+        ? String(statusRow.due_date).slice(0, 10)
+        : aviso.data_limite,
+      statusTotalpass: ben.status_totalpass,
+      temAssinaturaAtiva: Boolean(assinaturaAtiva),
+      gateway: "infinity",
+    });
+  }
+
+  return out
+    .sort((a, b) => a.dataLimite.localeCompare(b.dataLimite))
+    .slice(0, limit);
 }
 
 /**
@@ -302,6 +364,9 @@ export async function processOverdueInactivations(supabase: SupabaseClient) {
             tem_plano_ativo: temPlanoAtivo ? "sim" : "nao",
             mensagem_plano: mensagemPlano,
             link_pagamento: paymentVars.link_fatura || "",
+            instrucao_pagamento: paymentVars.link_fatura
+              ? "Toque no botão abaixo para regularizar o pagamento."
+              : "Entre em contato conosco para regularizar o pagamento.",
           },
           asaasPaymentId: cob.asaas_payment_id,
           refId: `desvinculo:${cob.id}`,

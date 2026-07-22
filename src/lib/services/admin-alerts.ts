@@ -86,16 +86,7 @@ export async function notifyAdminAlert(
   const channels: { email?: boolean; whatsapp?: boolean } = {};
   const errors: string[] = [];
 
-  if (hasEmail) {
-    const emailResult = await sendAdminEmail({
-      to: bridge.admin_email!,
-      subject: params.subject,
-      text: params.text,
-    });
-    if (emailResult.ok) channels.email = true;
-    else errors.push(`email: ${emailResult.reason}`);
-  }
-
+  // Prioridade WhatsApp; e-mail só se WA não enviar
   if (hasWhatsApp) {
     const uazapi = await getUazapiConfig(supabase);
     if (!uazapi.url || !uazapi.token) {
@@ -123,6 +114,16 @@ export async function notifyAdminAlert(
         }
       }
     }
+  }
+
+  if (hasEmail && !channels.whatsapp) {
+    const emailResult = await sendAdminEmail({
+      to: bridge.admin_email!,
+      subject: params.subject,
+      text: params.text,
+    });
+    if (emailResult.ok) channels.email = true;
+    else errors.push(`email: ${emailResult.reason}`);
   }
 
   const sent = Boolean(channels.email || channels.whatsapp);

@@ -34,6 +34,7 @@ import type { TesteEnvioTipo } from "@/lib/uazapi/test-send";
 const tipoEnvioOptions: Array<{ value: TipoEnvioMensagem; label: string }> = [
   { value: "texto", label: "Texto simples" },
   { value: "botao_pix", label: "Botão Copiar PIX" },
+  { value: "botao_link", label: "Botão abrir link (pagamento)" },
   { value: "botoes_pix_boleto", label: "Botões PIX + boleto" },
   { value: "botoes_pagamento", label: "Botões PIX + boleto + fatura" },
 ];
@@ -242,10 +243,15 @@ export function MensagensPanel({
           temCobrancaPendente: !!data.temCobrancaPendente,
           temCodigoPix: Boolean(data.vars?.codigo_pix),
           temLinhaDigitavel: Boolean(data.vars?.linha_digitavel),
-          temLinkFatura: Boolean(data.vars?.link_fatura),
+          temLinkFatura: Boolean(
+            data.vars?.link_fatura || data.vars?.link_pagamento
+          ),
         });
         setTestSendType((prev) => {
           if (prev === "botao_pix" && !data.vars?.codigo_pix) return "texto";
+          if (prev === "botao_link" && !data.vars?.link_fatura && !data.vars?.link_pagamento) {
+            return "texto";
+          }
           if (
             prev === "botoes_pix_boleto" &&
             (!data.vars?.codigo_pix || !data.vars?.linha_digitavel)
@@ -478,6 +484,12 @@ export function MensagensPanel({
                   Botão Copiar PIX
                 </option>
                 <option
+                  value="botao_link"
+                  disabled={!testTemplateId || !previewMeta.temLinkFatura}
+                >
+                  Botão abrir link (pagamento)
+                </option>
+                <option
                   value="botoes_pix_boleto"
                   disabled={
                     !testTemplateId ||
@@ -506,11 +518,13 @@ export function MensagensPanel({
                     ? "Carregando dados de pagamento..."
                     : testSendType === "botao_pix"
                       ? "Envia /send/menu com Copiar PIX|copy:{{codigo_pix}}."
-                      : testSendType === "botoes_pix_boleto"
-                        ? "Envia dois botões: PIX copia e cola e linha digitável do boleto."
-                        : testSendType === "botoes_pagamento"
-                          ? "Envia três botões: copiar PIX, copiar boleto e abrir fatura."
-                        : "Envia a mensagem como texto normal."}
+                      : testSendType === "botao_link"
+                        ? "Envia um botão com o link de pagamento (sem PIX/boleto)."
+                        : testSendType === "botoes_pix_boleto"
+                          ? "Envia dois botões: PIX copia e cola e linha digitável do boleto."
+                          : testSendType === "botoes_pagamento"
+                            ? "Envia três botões: copiar PIX, copiar boleto e abrir fatura."
+                            : "Envia a mensagem como texto normal."}
               </p>
             </div>
 

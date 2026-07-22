@@ -107,9 +107,44 @@ export function ConfiguracoesForm({
   });
   const [bridgeStatus, setBridgeStatus] = useState(bridgeStatusInit);
   const [infinityStatus, setInfinityStatus] = useState(infinityStatusInit);
+  const [infinityJobs, setInfinityJobs] = useState<{
+    pending: number;
+    running: number;
+    today: number;
+    teto: number;
+    dry_run: boolean;
+    ativa: boolean;
+    recent: Array<{
+      id: string;
+      tipo: string;
+      status: string;
+      dry_run: boolean;
+      last_error: string | null;
+      created_at: string;
+      completed_at: string | null;
+      payload?: Record<string, unknown> | null;
+    }>;
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [runningReminders, setRunningReminders] = useState(false);
   const [retryingJobs, setRetryingJobs] = useState(false);
+  const [loadingInfinityJobs, setLoadingInfinityJobs] = useState(false);
+
+  async function refreshInfinityJobs() {
+    setLoadingInfinityJobs(true);
+    try {
+      const res = await fetch("/api/infinity/jobs");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erro ao carregar fila");
+      setInfinityJobs(data);
+    } catch (e) {
+      toast.error(
+        e instanceof Error ? e.message : "Erro ao carregar fila Infinity"
+      );
+    } finally {
+      setLoadingInfinityJobs(false);
+    }
+  }
 
   async function salvar(chave: string, valor: object) {
     setLoading(true);
@@ -722,10 +757,9 @@ export function ConfiguracoesForm({
           <CardTitle>InfinitePay (extensão)</CardTitle>
           <CardDescription>
             Extensão Infinity Bridge. Sync de clientes ativo (Fase 2). No sync,
-            titular na Infinity → gateway Infinity; se sumir → Asaas. Escrita
-            create/cancel (Fase 3) ainda não liberada — mantenha{" "}
-            <strong>dry-run ligado</strong> até validar. Desvínculo automático é
-            Fase 4.
+            titular na Infinity → gateway Infinity; se sumir → Asaas. Fase 3:
+            fila create/cancel com <strong>dry-run</strong> (extensão simula,
+            sem escrita real). Desvínculo automático é Fase 4.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -780,8 +814,9 @@ export function ConfiguracoesForm({
                 Automação de desvínculo por atraso Infinity
               </span>
               <span className="mt-1 block text-xs text-slate-500">
-                Fase 4 — ainda sem efeito no cron. Deixe desligada até o sync
-                e os jobs estarem estáveis.
+                Fase 4: com atraso Infinity (após carência do bridge), avisa no
+                WhatsApp e enfileira inativação no TotalPass HR. Com dry-run
+                ligado, só registra logs. Deixe desligada até validar o sync.
               </span>
             </span>
           </label>
@@ -900,10 +935,64 @@ export function ConfiguracoesForm({
               )}
             </div>
           )}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-900/40">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-medium">Fila de jobs Infinity (Fase 3)</p>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={loadingInfinityJobs || loading}
+                onClick={refreshInfinityJobs}
+              >
+                {loadingInfinityJobs ? "Atualizando…" : "Atualizar fila"}
+              </Button>
+            </div>
+            {infinityJobs ? (
+              <>
+                <p className="mt-2">
+                  Pendentes: <strong>{infinityJobs.pending}</strong> · Em
+                  execução: <strong>{infinityJobs.running}</strong> · Hoje:{" "}
+                  <strong>
+                    {infinityJobs.today}/{infinityJobs.teto}
+                  </strong>{" "}
+                  · dry-run:{" "}
+                  <strong>{infinityJobs.dry_run ? "ligado" : "desligado"}</strong>
+                </p>
+                {infinityJobs.recent.length > 0 ? (
+                  <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-xs text-slate-600 dark:text-slate-400">
+                    {infinityJobs.recent.map((j) => (
+                      <li key={j.id}>
+                        {new Date(j.created_at).toLocaleString("pt-BR")} ·{" "}
+                        {j.tipo === "create_charge"
+                          ? "criar cobrança"
+                          : "cancelar"}{" "}
+                        · {j.status}
+                        {j.dry_run ? " (dry-run)" : ""}
+                        {typeof j.payload?.nome === "string"
+                          ? ` · ${j.payload.nome}`
+                          : ""}
+                        {j.last_error ? ` — ${j.last_error}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-xs text-slate-500">
+                    Nenhum job ainda. Use POST /api/infinity/jobs (admin) para
+                    enfileirar um teste dry-run.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="mt-2 text-xs text-slate-500">
+                Clique em Atualizar fila para ver pendentes e histórico recente.
+              </p>
+            )}
+          </div>
           <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-            Marque titulares com gateway InfinitePay na ficha. Com a integração
-            ligada, a extensão sincroniza overdue sem criar/cancelar cobranças
-            (dry-run ainda vale para Fase 3).
+            Com dry-run ligado, a extensão v0.1.5+ processa a fila só simulando.
+            Escrita real na InfinitePay fica bloqueada até capturarmos o HAR dos
+            endpoints.
           </p>
           <div className="flex flex-wrap gap-2">
             <Button

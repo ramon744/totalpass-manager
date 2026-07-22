@@ -8,6 +8,7 @@ import {
   notifyAdminAlert,
 } from "@/lib/services/admin-alerts";
 import { cancelActiveSubscriptionsForBeneficiario } from "@/lib/services/subscriptions";
+import { enqueueInfinityJob } from "@/lib/services/infinity-jobs";
 import { getBrazilDayStartUtcIso } from "@/lib/services/reminder-schedule";
 import { renderTemplate } from "@/lib/uazapi/client";
 import type { BridgeJob, ConfigBridge } from "@/types/database";
@@ -291,12 +292,29 @@ export async function enqueueBridgeJob(
   params: {
     beneficiarioId: string;
     cpf: string;
-    cobrancaId: string;
+    cobrancaId?: string | null;
+    infinityCustomerId?: string | null;
     dataLimite: string;
     motivo?: string;
   }
 ) {
-  const idempotencyKey = `inactivate:${params.beneficiarioId}:${params.cobrancaId}`;
+  const ref =
+    (params.cobrancaId && String(params.cobrancaId).trim()) ||
+    (params.infinityCustomerId
+      ? `infinity:${String(params.infinityCustomerId).trim()}`
+      : "");
+  if (!ref) {
+    throw new Error("Informe cobrancaId ou infinityCustomerId para o job");
+  }
+
+  const idempotencyKey = `inactivate:${params.beneficiarioId}:${ref}`;
+  const payload = {
+    reason_explanation: "Employee dismissal",
+    data_limite: params.dataLimite,
+    cobranca_id: params.cobrancaId ?? null,
+    infinity_customer_id: params.infinityCustomerId ?? null,
+    gateway: params.infinityCustomerId ? "infinity" : "asaas",
+  };
 
   const { data: existing } = await supabase
     .from("bridge_jobs")
@@ -320,11 +338,7 @@ export async function enqueueBridgeJob(
         run_after: new Date().toISOString(),
         completed_at: null,
         result: null,
-        payload: {
-          reason_explanation: "Employee dismissal",
-          data_limite: params.dataLimite,
-          cobranca_id: params.cobrancaId,
-        },
+        payload,
         updated_at: new Date().toISOString(),
       })
       .eq("id", existing.id)
@@ -343,11 +357,7 @@ export async function enqueueBridgeJob(
       beneficiario_id: params.beneficiarioId,
       cpf: digitsOnly(params.cpf),
       motivo: params.motivo ?? "inadimplencia",
-      payload: {
-        reason_explanation: "Employee dismissal",
-        data_limite: params.dataLimite,
-        cobranca_id: params.cobrancaId,
-      },
+      payload,
       idempotency_key: idempotencyKey,
     })
     .select("id, status")
@@ -486,7 +496,126 @@ export async function reportBridgeJobResult(
 }
 
 /**
- * Após sucesso no TotalPass: marca inativo e cancela Asaas/assinaturas.
+ * Inativa no Manager todos os dependentes do titular e enfileira jobs HR
+ * para cada CPF (mesmo fluxo do desvínculo Asaas/Infinity).
+ */
+export async function cascadeInactivateDependentsOfTitular(
+  supabase: SupabaseClient,
+  params: {
+    titularId: string;
+    parentJobId: string;
+    motivoTitular?: string | null;
+    userId?: string | null;
+  }
+) {
+  const { data: deps, error } = await supabase
+    .from("beneficiarios")
+    .select("id, cpf, nome, status_totalpass")
+    .eq("titular_id", params.titularId)
+    .eq("perfil", "dependente")
+    .neq("status_totalpass", "inativo");
+
+  if (error) throw new Error(error.message);
+  if (!deps?.length) {
+    return { marked: 0, enqueued: 0 };
+  }
+
+  const now = new Date().toISOString();
+  const ids = deps.map((d) => d.id);
+  const { error: updErr } = await supabase
+    .from("beneficiarios")
+    .update({
+      status_totalpass: "inativo",
+      observacoes:
+        "Desvinculado automaticamente com o titular (inadimplência)",
+      updated_at: now,
+    })
+    .in("id", ids);
+
+  if (updErr) throw new Error(updErr.message);
+
+  let enqueued = 0;
+  for (const dep of deps) {
+    const cpf = digitsOnly(dep.cpf);
+    if (cpf.length < 11) continue;
+
+    const idempotencyKey = `inactivate:${dep.id}:cascade:${params.parentJobId}`;
+    const { data: existing } = await supabase
+      .from("bridge_jobs")
+      .select("id, status")
+      .eq("idempotency_key", idempotencyKey)
+      .maybeSingle();
+
+    if (
+      existing &&
+      ["pending", "claimed", "running", "succeeded"].includes(existing.status)
+    ) {
+      continue;
+    }
+
+    const payload = {
+      reason_explanation: "Employee dismissal",
+      cascade_from_titular: params.titularId,
+      parent_job_id: params.parentJobId,
+      perfil: "dependente",
+    };
+
+    if (existing) {
+      const { error: reopenErr } = await supabase
+        .from("bridge_jobs")
+        .update({
+          status: "pending",
+          attempts: 0,
+          last_error: null,
+          claimed_at: null,
+          claimed_by: null,
+          run_after: now,
+          completed_at: null,
+          result: null,
+          payload,
+          updated_at: now,
+        })
+        .eq("id", existing.id);
+      if (!reopenErr) enqueued++;
+      continue;
+    }
+
+    const { error: insErr } = await supabase.from("bridge_jobs").insert({
+      tipo: "inactivate_totalpass",
+      status: "pending",
+      beneficiario_id: dep.id,
+      cpf,
+      motivo: "inadimplencia_cascade_dependente",
+      payload,
+      idempotency_key: idempotencyKey,
+      attempts: 0,
+      max_attempts: 5,
+      run_after: now,
+    });
+    if (!insErr) enqueued++;
+  }
+
+  await createLog(supabase, {
+    usuario_id: params.userId ?? undefined,
+    acao: "bridge_cascade_dependentes_inativados",
+    entidade: "beneficiarios",
+    entidade_id: params.titularId,
+    payload: {
+      parent_job_id: params.parentJobId,
+      marked: ids.length,
+      enqueued,
+      dependente_ids: ids,
+    },
+  });
+
+  return { marked: ids.length, enqueued };
+}
+
+/**
+ * Após sucesso no TotalPass: marca inativo e cancela cobrança no gateway.
+ * - Dependentes do titular também ficam inativos (Manager + fila HR)
+ * - Asaas: cancela assinaturas Asaas
+ * - Infinity: enfileira cancel_subscription (extensão POST /subscriptions/{slug}/cancel)
  */
 export async function onInactivateSucceeded(
   supabase: SupabaseClient,
@@ -510,11 +639,107 @@ export async function onInactivateSucceeded(
     })
     .eq("id", job.beneficiario_id);
 
-  await cancelActiveSubscriptionsForBeneficiario(supabase, job.beneficiario_id, {
-    notificar: bridge.notificar_cancelamento_asaas,
-    userId: userId ?? undefined,
-    motivo: "inadimplencia_totalpass",
-  });
+  const payload =
+    job.payload && typeof job.payload === "object"
+      ? (job.payload as Record<string, unknown>)
+      : {};
+  const isCascadeDependent =
+    job.motivo === "inadimplencia_cascade_dependente" ||
+    Boolean(payload.cascade_from_titular);
+
+  // Job do dependente: só marca inativo (já feito). Sem cancelar fatura do titular.
+  if (isCascadeDependent) {
+    await createLog(supabase, {
+      usuario_id: userId ?? undefined,
+      acao: "bridge_inactivate_succeeded",
+      entidade: "bridge_jobs",
+      entidade_id: job.id,
+      payload: {
+        beneficiario_id: job.beneficiario_id,
+        cpf_tail: digitsOnly(job.cpf).slice(-4),
+        removed_at: removedAt,
+        tp_employee_id: job.result?.tp_employee_id ?? null,
+        cascade_from_titular: payload.cascade_from_titular ?? null,
+        perfil: "dependente",
+      },
+    });
+    return;
+  }
+
+  // Titular: propaga aos dependentes
+  try {
+    await cascadeInactivateDependentsOfTitular(supabase, {
+      titularId: job.beneficiario_id,
+      parentJobId: job.id,
+      motivoTitular: job.motivo,
+      userId,
+    });
+  } catch (e) {
+    await createLog(supabase, {
+      usuario_id: userId ?? undefined,
+      acao: "bridge_cascade_dependentes_erro",
+      entidade: "bridge_jobs",
+      entidade_id: job.id,
+      payload: {
+        beneficiario_id: job.beneficiario_id,
+        error: e instanceof Error ? e.message : String(e),
+      },
+    });
+  }
+
+  const isInfinity =
+    job.motivo === "inadimplencia_infinity" ||
+    payload.gateway === "infinity" ||
+    Boolean(payload.infinity_customer_id);
+
+  if (isInfinity) {
+    try {
+      const jobInf = await enqueueInfinityJob(supabase, {
+        tipo: "cancel_subscription",
+        beneficiarioId: job.beneficiario_id,
+        userId: userId ?? undefined,
+        idempotencyKey: `cancel_subscription:after_desvinculo:${job.id}`,
+        payload: {
+          reason: "after_totalpass_desvinculo",
+          bridge_job_id: job.id,
+          infinity_customer_id: payload.infinity_customer_id ?? null,
+        },
+      });
+      await createLog(supabase, {
+        usuario_id: userId ?? undefined,
+        acao: "infinity_cancel_enqueued_apos_desvinculo",
+        entidade: "infinity_jobs",
+        entidade_id: jobInf.id,
+        payload: {
+          bridge_job_id: job.id,
+          beneficiario_id: job.beneficiario_id,
+          dry_run: jobInf.dry_run,
+          slug: jobInf.infinity_subscription_slug,
+        },
+      });
+    } catch (e) {
+      await createLog(supabase, {
+        usuario_id: userId ?? undefined,
+        acao: "infinity_cancel_enqueue_erro_apos_desvinculo",
+        entidade: "bridge_jobs",
+        entidade_id: job.id,
+        payload: {
+          beneficiario_id: job.beneficiario_id,
+          error: e instanceof Error ? e.message : String(e),
+        },
+      });
+    }
+  } else {
+    await cancelActiveSubscriptionsForBeneficiario(
+      supabase,
+      job.beneficiario_id,
+      {
+        notificar: bridge.notificar_cancelamento_asaas,
+        userId: userId ?? undefined,
+        motivo: "inadimplencia_totalpass",
+      }
+    );
+  }
 
   await createLog(supabase, {
     usuario_id: userId ?? undefined,
@@ -526,6 +751,7 @@ export async function onInactivateSucceeded(
       cpf_tail: digitsOnly(job.cpf).slice(-4),
       removed_at: removedAt,
       tp_employee_id: job.result?.tp_employee_id ?? null,
+      gateway: isInfinity ? "infinity" : "asaas",
     },
   });
 }

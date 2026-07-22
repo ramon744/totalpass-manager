@@ -67,7 +67,8 @@ export async function POST(request: NextRequest) {
       texto = renderTemplate(template.corpo, result.vars);
       codigoPix = result.vars.codigo_pix ?? "";
       linhaDigitavel = result.vars.linha_digitavel ?? "";
-      linkFatura = result.vars.link_fatura ?? "";
+      linkFatura =
+        result.vars.link_fatura || result.vars.link_pagamento || "";
       if (!phoneInput && result.telefone) {
         phoneInput = maskPhoneInput(result.telefone);
       }
@@ -75,7 +76,10 @@ export async function POST(request: NextRequest) {
       texto = renderTemplate(template.corpo, TEMPLATE_SAMPLE_VARS);
       codigoPix = TEMPLATE_SAMPLE_VARS.codigo_pix;
       linhaDigitavel = TEMPLATE_SAMPLE_VARS.linha_digitavel;
-      linkFatura = TEMPLATE_SAMPLE_VARS.link_fatura;
+      linkFatura =
+        TEMPLATE_SAMPLE_VARS.link_fatura ||
+        TEMPLATE_SAMPLE_VARS.link_pagamento ||
+        "";
     }
   }
 
@@ -102,6 +106,16 @@ export async function POST(request: NextRequest) {
       {
         error:
           "Não foi possível enviar o botão: este template/cliente não possui código PIX.",
+      },
+      { status: 400 }
+    );
+  }
+
+  if (tipoEnvio === "botao_link" && !linkFatura) {
+    return NextResponse.json(
+      {
+        error:
+          "Não foi possível enviar o botão: este template/cliente não possui link de pagamento.",
       },
       { status: 400 }
     );
@@ -137,6 +151,8 @@ export async function POST(request: NextRequest) {
     const client = new UazapiClient(uazapiConfig);
     if (tipoEnvio === "botao_pix") {
       await client.sendCopyButton(phone, texto, codigoPix);
+    } else if (tipoEnvio === "botao_link") {
+      await client.sendLinkButton(phone, texto, linkFatura);
     } else if (tipoEnvio === "botoes_pix_boleto") {
       await client.sendPaymentCopyButtons(phone, texto, {
         codigoPix,

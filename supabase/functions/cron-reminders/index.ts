@@ -402,6 +402,19 @@ async function sendQueuedMessage(
     });
   }
 
+  if (msg.tipo_envio === "botao_link") {
+    const link = String(p.link_pagamento || p.link_fatura || "").trim();
+    if (link) {
+      return uazapiSend(cfg, "/send/menu", {
+        number: msg.telefone,
+        type: "button",
+        text: msg.mensagem,
+        choices: [`Pagar agora|${link}`],
+        footerText: "Toque no botao para abrir o pagamento",
+      });
+    }
+  }
+
   return uazapiSend(cfg, "/send/text", {
     number: msg.telefone,
     text: msg.mensagem,
@@ -462,12 +475,20 @@ async function scheduleMessage(
 
   if (jaExiste) return;
 
+  let tipoEnvio = template.tipo_envio ?? "texto";
+  if (tipoEnvio === "botao_link") {
+    const link = String(
+      payloadEnvio.link_pagamento || payloadEnvio.link_fatura || ""
+    ).trim();
+    if (!link) tipoEnvio = "texto";
+  }
+
   await supabase.from("mensagens").insert({
     beneficiario_id: params.beneficiarioId,
     telefone: normalizePhone(beneficiario.telefone),
     template_id: template.id,
     mensagem,
-    tipo_envio: template.tipo_envio ?? "texto",
+    tipo_envio: tipoEnvio,
     payload_envio: payloadEnvio,
     max_tentativas: template.max_tentativas ?? 3,
     status: "pendente",

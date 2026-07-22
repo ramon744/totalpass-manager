@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { drainMessageQueue } from "@/lib/services/messages";
 import { createSubscription } from "@/lib/services/subscriptions";
+import { enqueueInfinityJob } from "@/lib/services/infinity-jobs";
 
 export async function POST(request: NextRequest) {
   const supabase = await createClient();
@@ -14,7 +15,8 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { beneficiarioIds, valor, diaVencimento, descricao, nome, telefone } = body;
+  const { beneficiarioIds, valor, diaVencimento, descricao, nome, telefone } =
+    body;
 
   type ClienteLote = {
     id: string;
@@ -24,6 +26,7 @@ export async function POST(request: NextRequest) {
     descricao?: string;
     dataVencimento?: string;
     dependentesCobrancaIds?: string[];
+    gateway?: "asaas" | "infinity";
   };
 
   const clientes = body.clientes as ClienteLote[] | undefined;
@@ -35,7 +38,10 @@ export async function POST(request: NextRequest) {
           id,
           nome: nome as string | undefined,
           telefone: telefone as string | null | undefined,
-          dependentesCobrancaIds: body.dependentesCobrancaIds as string[] | undefined,
+          dependentesCobrancaIds: body.dependentesCobrancaIds as
+            | string[]
+            | undefined,
+          gateway: "asaas" as const,
         }));
 
   if (!lista.length) {
@@ -58,9 +64,17 @@ export async function POST(request: NextRequest) {
     ? await createServiceClient()
     : supabase;
 
-  const results: Array<{ id: string; success: boolean; error?: string }> = [];
+  const results: Array<{
+    id: string;
+    success: boolean;
+    gateway?: "asaas" | "infinity";
+    error?: string;
+  }> = [];
+
+  let asaasSuccess = false;
 
   for (const cliente of lista) {
+    const gateway = cliente.gateway === "infinity" ? "infinity" : "asaas";
     const clienteValor =
       cliente.valor != null ? Number(cliente.valor) : Number(valor);
     const clienteDescricao =
@@ -73,6 +87,7 @@ export async function POST(request: NextRequest) {
       results.push({
         id: cliente.id,
         success: false,
+        gateway,
         error: "Valor inválido para este cliente",
       });
       continue;
@@ -82,12 +97,69 @@ export async function POST(request: NextRequest) {
       results.push({
         id: cliente.id,
         success: false,
+        gateway,
         error: "Data de vencimento inválida para este cliente",
       });
       continue;
     }
 
     try {
+      if (gateway === "infinity") {
+        // Não cria no Asaas nem notifica. Só marca gateway + fila dry-run.
+        const { data: ben, error: benErr } = await serviceClient
+          .from("beneficiarios")
+          .select("id, perfil, gateway_pagamento, telefone, nome")
+          .eq("id", cliente.id)
+          .maybeSingle();
+        if (benErr || !ben) {
+          throw new Error(benErr?.message ?? "Beneficiário não encontrado");
+        }
+        if (ben.perfil !== "titular") {
+          throw new Error("Só titulares podem ir para Infinity");
+        }
+
+        const now = new Date().toISOString();
+        const patch: Record<string, unknown> = {
+          gateway_pagamento: "infinity",
+          updated_at: now,
+        };
+        if (cliente.nome?.trim()) patch.nome = cliente.nome.trim();
+        if (cliente.telefone) patch.telefone = String(cliente.telefone);
+
+        const { error: upErr } = await serviceClient
+          .from("beneficiarios")
+          .update(patch)
+          .eq("id", cliente.id);
+        if (upErr) throw new Error(upErr.message);
+
+        await enqueueInfinityJob(serviceClient, {
+          tipo: "create_charge",
+          beneficiarioId: cliente.id,
+          payload: {
+            valor: clienteValor,
+            descricao: clienteDescricao,
+            dataVencimento: cliente.dataVencimento ?? null,
+            origem: "financeiro",
+          },
+          userId: user.id,
+        });
+
+        results.push({ id: cliente.id, success: true, gateway: "infinity" });
+        continue;
+      }
+
+      // Segurança: não criar Asaas se já está marcado Infinity
+      const { data: check } = await serviceClient
+        .from("beneficiarios")
+        .select("gateway_pagamento")
+        .eq("id", cliente.id)
+        .maybeSingle();
+      if (check?.gateway_pagamento === "infinity") {
+        throw new Error(
+          "Cliente já está no gateway Infinity — não gere fatura Asaas"
+        );
+      }
+
       await createSubscription(serviceClient, {
         beneficiarioId: cliente.id,
         valor: clienteValor,
@@ -99,21 +171,24 @@ export async function POST(request: NextRequest) {
         dependentesCobrancaIds: cliente.dependentesCobrancaIds,
         userId: user.id,
       });
-      results.push({ id: cliente.id, success: true });
+      results.push({ id: cliente.id, success: true, gateway: "asaas" });
+      asaasSuccess = true;
     } catch (e) {
       results.push({
         id: cliente.id,
         success: false,
+        gateway,
         error: e instanceof Error ? e.message : "Erro",
       });
     }
   }
 
-  if (results.some((r) => r.success)) {
+  // Só drena fila WhatsApp se houve criação Asaas (Infinity não notifica aqui)
+  if (asaasSuccess) {
     try {
       await drainMessageQueue(serviceClient);
     } catch {
-      // Assinatura criada; mensagens permanecem na fila para retry manual/cron.
+      // Assinatura criada; mensagens permanecem na fila
     }
   }
 

@@ -257,6 +257,7 @@ export function getVariablesForEvent(evento: string): string[] {
       "mensagem_plano",
       "link_pagamento",
       "link_fatura",
+      "instrucao_pagamento",
     ];
   }
 

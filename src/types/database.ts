@@ -8,6 +8,7 @@ export type MensagemStatus = "pendente" | "enviando" | "enviado" | "erro";
 export type TipoEnvioMensagem =
   | "texto"
   | "botao_pix"
+  | "botao_link"
   | "botoes_pix_boleto"
   | "botoes_pagamento";
 
@@ -73,8 +74,10 @@ export interface Provedor {
 export interface ProvedorInput {
   nome: string;
   beneficio: string;
-  custo_colaborador: number;
-  dia_pagamento: number;
+  /** Custo ao provedor; null/0 = sem custo por colaborador. */
+  custo_colaborador?: number | null;
+  /** Dia 1–28 da fatura do provedor; null se não houver. */
+  dia_pagamento?: number | null;
   valor_cobrado_mensal: number;
   cobrar_dependentes?: boolean;
   valor_dependente?: number | null;
@@ -441,15 +444,28 @@ export interface ProvedorResumo {
   totalGeral: number;
 }
 
+export interface InfinityFinanceiroStats {
+  pendentes: number;
+  vencidas: number;
+  pagas: number;
+  receitaPrevista: number;
+  receitaRecebida: number;
+  inadimplencia: number;
+}
+
 export interface DashboardStats {
   totalBeneficiarios: number;
   titulares: BeneficiarioResumo;
   dependentes: BeneficiarioResumo;
   provedores: ProvedorResumo[];
+  /** Métricas Asaas (tabela cobrancas) — intactas. */
   assinaturasAtivas: number;
   cobrancasPendentes: number;
   cobrancasVencidas: number;
   receitaPrevista: number;
   receitaRecebida: number;
   inadimplencia: number;
+  /** Só preenchido se infinity.ativa; ao desligar some do Dashboard. */
+  infinityAtiva: boolean;
+  infinity: InfinityFinanceiroStats | null;
 }

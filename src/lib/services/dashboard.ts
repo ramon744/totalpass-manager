@@ -1,12 +1,17 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { mapAsaasPaymentStatus } from "@/lib/asaas/client";
 import { buildBeneficiarioResumo } from "@/lib/beneficiarios-resumo";
+import { getInfinityConfigRaw } from "@/lib/config";
 import { createLog } from "@/lib/logger";
 import { drainMessageQueue, scheduleMessage } from "@/lib/services/messages";
 import { buildPaymentTemplateVars } from "@/lib/services/payment-message-vars";
 import { scheduleCatchUpPaymentReminder } from "@/lib/services/reminder-catchup";
 import { handleAsaasSubscriptionWebhook } from "@/lib/services/subscriptions";
-import type { DashboardStats, ProvedorResumo } from "@/types/database";
+import type {
+  DashboardStats,
+  InfinityFinanceiroStats,
+  ProvedorResumo,
+} from "@/types/database";
 
 const SEM_PROVEDOR_ID = "__sem_provedor__";
 
@@ -140,6 +145,55 @@ export async function getDashboardStats(
   const inadimplencia =
     receitaPrevista > 0 ? (emVencidas / receitaPrevista) * 100 : 0;
 
+  // InfinitePay: só entra no Dashboard se integração ativa (desligar = some).
+  let infinityAtiva = false;
+  let infinity: InfinityFinanceiroStats | null = null;
+  try {
+    const infinityCfg = await getInfinityConfigRaw(supabase);
+    infinityAtiva = infinityCfg.ativa === true;
+    if (infinityAtiva) {
+      const { data: infRows } = await supabase
+        .from("infinity_customer_status")
+        .select("payment_status, amount");
+
+      const rows = infRows ?? [];
+      const pendentes = rows.filter((r) => r.payment_status === "pending").length;
+      const vencidas = rows.filter((r) => r.payment_status === "overdue").length;
+      const pagas = rows.filter((r) => r.payment_status === "paid").length;
+
+      const receitaRecebidaInf = rows
+        .filter((r) => r.payment_status === "paid" && r.amount != null)
+        .reduce((s, r) => s + Number(r.amount), 0);
+
+      const receitaPrevistaInf = rows
+        .filter(
+          (r) =>
+            ["pending", "overdue", "paid"].includes(String(r.payment_status)) &&
+            r.amount != null
+        )
+        .reduce((s, r) => s + Number(r.amount), 0);
+
+      const emVencidasInf = rows
+        .filter((r) => r.payment_status === "overdue" && r.amount != null)
+        .reduce((s, r) => s + Number(r.amount), 0);
+
+      infinity = {
+        pendentes,
+        vencidas,
+        pagas,
+        receitaPrevista: receitaPrevistaInf,
+        receitaRecebida: receitaRecebidaInf,
+        inadimplencia:
+          receitaPrevistaInf > 0
+            ? (emVencidasInf / receitaPrevistaInf) * 100
+            : 0,
+      };
+    }
+  } catch {
+    infinityAtiva = false;
+    infinity = null;
+  }
+
   return {
     totalBeneficiarios: lista.length,
     titulares,
@@ -151,6 +205,8 @@ export async function getDashboardStats(
     receitaPrevista,
     receitaRecebida,
     inadimplencia,
+    infinityAtiva,
+    infinity,
   };
 }
 

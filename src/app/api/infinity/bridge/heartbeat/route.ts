@@ -43,6 +43,7 @@ export async function POST(request: NextRequest) {
     lastError?: string | null;
     healthOk?: boolean | null;
     overdueCount?: number | null;
+    recovering?: boolean | null;
   };
 
   try {
@@ -73,6 +74,7 @@ export async function POST(request: NextRequest) {
       healthOk: body.healthOk == null ? null : Boolean(body.healthOk),
       overdueCount:
         body.overdueCount == null ? null : Number(body.overdueCount),
+      recovering: body.recovering == null ? null : Boolean(body.recovering),
     });
 
     return infinityJson(

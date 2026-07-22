@@ -9,9 +9,11 @@ import {
   formatCurrency,
   formatDate,
   formatDateTime,
+  formatCpf,
   statusLabel,
 } from "@/lib/utils";
 import { matchesPerson, scorePerson, sortBySearchScore } from "@/lib/search";
+import { CopyableValue } from "@/components/ui/copyable-value";
 import type { Beneficiario, Cobranca } from "@/types/database";
 
 type CobrancaComBeneficiario = Cobranca & {
@@ -250,8 +252,18 @@ export function CobrancasList({
                           {grupo.cobrancas.length} cobrança(s)
                         </span>
                       </button>
-                      <p className="mt-1 pl-6 text-xs text-slate-500">
-                        {statusResumo(grupo)}
+                      <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-6 text-xs text-slate-500">
+                        {grupo.beneficiario?.cpf ? (
+                          <CopyableValue
+                            value={grupo.beneficiario.cpf}
+                            mode="cpf"
+                            display={formatCpf(grupo.beneficiario.cpf)}
+                            className="text-xs text-slate-500"
+                          />
+                        ) : (
+                          <span>sem CPF</span>
+                        )}
+                        <span>· {statusResumo(grupo)}</span>
                       </p>
                     </td>
                     <td className="px-4 py-3">

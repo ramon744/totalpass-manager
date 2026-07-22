@@ -316,6 +316,19 @@ async function sendMessageNow(
     });
   }
 
+  if (msg.tipo_envio === "botao_link") {
+    const link = String(p.link_pagamento || p.link_fatura || "").trim();
+    if (link) {
+      return uazapiSend(cfg, "/send/menu", {
+        number: msg.telefone,
+        type: "button",
+        text: msg.mensagem,
+        choices: [`Pagar agora|${link}`],
+        footerText: "Toque no botão para abrir o pagamento",
+      });
+    }
+  }
+
   return uazapiSend(cfg, "/send/text", {
     number: msg.telefone,
     text: msg.mensagem,
@@ -368,7 +381,13 @@ async function scheduleMessage(
     ...(dedupeRef ? { ref_id: dedupeRef } : {}),
   };
   const telefone = normalizePhone(beneficiario.telefone);
-  const tipoEnvio = template.tipo_envio ?? "texto";
+  let tipoEnvio = template.tipo_envio ?? "texto";
+  if (tipoEnvio === "botao_link") {
+    const link = String(
+      payloadEnvio.link_pagamento || payloadEnvio.link_fatura || ""
+    ).trim();
+    if (!link) tipoEnvio = "texto";
+  }
 
   if (dedupeRef) {
     const { data: jaExiste } = await supabase

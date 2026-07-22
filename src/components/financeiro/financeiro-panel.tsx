@@ -38,6 +38,8 @@ import { resolveAssinaturaDefaults } from "@/lib/assinatura-defaults";
 import { isValidPhone } from "@/lib/validators/phone";
 import type { Beneficiario, PreCadastroWhatsapp, Provedor } from "@/types/database";
 
+type GatewayPagamento = "asaas" | "infinity";
+
 interface ClienteRevisao {
   id: string;
   nome: string;
@@ -46,10 +48,18 @@ interface ClienteRevisao {
   valor: string;
   descricao: string;
   vencimento: string;
+  gateway: GatewayPagamento;
+  gatewaySugerido: GatewayPagamento;
   dependentesCobrancaIds: string[];
   dependentesResumo: string;
   sugestaoWhatsapp?: SugestaoWhatsapp;
 }
+
+type PendenteFinanceiro = Beneficiario & {
+  dependentes?: Beneficiario[];
+  gatewaySugerido?: GatewayPagamento;
+  infinityHint?: { payment_status: string; nome: string | null } | null;
+};
 
 function valorToMask(value: number) {
   return value.toLocaleString("pt-BR", {
@@ -84,11 +94,14 @@ export function FinanceiroPanel({
   preCadastros,
   defaults,
   provedoresById,
+  ocultosInfinity = 0,
 }: {
-  pendentes: (Beneficiario & { dependentes?: Beneficiario[] })[];
+  pendentes: PendenteFinanceiro[];
   preCadastros: PreCadastroWhatsapp[];
   defaults: { valor: number; dia: number; descricao: string };
   provedoresById: Map<string, Provedor>;
+  /** Titulares sem Asaas mas já cobertos na InfinitePay (não listados). */
+  ocultosInfinity?: number;
 }) {
   const router = useRouter();
   const preCadastrosByCpf = useMemo(
@@ -136,6 +149,8 @@ export function FinanceiroPanel({
     const lista = selecionados.map((p) => {
       const resolved = resolveAssinaturaDefaults(p, provedoresById, defaults);
       const pre = preCadastrosByCpf.get(normalizeCpf(p.cpf));
+      const gatewaySugerido: GatewayPagamento =
+        p.gatewaySugerido === "infinity" ? "infinity" : "asaas";
       return {
         id: p.id,
         nome: p.nome,
@@ -144,6 +159,8 @@ export function FinanceiroPanel({
         valor: valorToMask(resolved.valor),
         descricao: resolved.descricao,
         vencimento: "",
+        gateway: gatewaySugerido,
+        gatewaySugerido,
         dependentesCobrancaIds: resolved.dependentesCobrancaIds ?? [],
         dependentesResumo:
           resolved.cobrarDependentes && resolved.dependentesCobrancaIds?.length
@@ -173,7 +190,7 @@ export function FinanceiroPanel({
     id: string,
     campo: keyof Pick<
       ClienteRevisao,
-      "nome" | "telefone" | "valor" | "descricao" | "vencimento"
+      "nome" | "telefone" | "valor" | "descricao" | "vencimento" | "gateway"
     >,
     value: string
   ) {
@@ -183,6 +200,12 @@ export function FinanceiroPanel({
         if (campo === "telefone") return { ...c, telefone: maskPhoneInput(value) };
         if (campo === "valor") return { ...c, valor: maskCurrencyInput(value) };
         if (campo === "vencimento") return { ...c, vencimento: maskDateInput(value) };
+        if (campo === "gateway") {
+          return {
+            ...c,
+            gateway: value === "infinity" ? "infinity" : "asaas",
+          };
+        }
         return { ...c, [campo]: value };
       })
     );
@@ -280,6 +303,7 @@ export function FinanceiroPanel({
             descricao: c.descricao.trim(),
             dataVencimento: parseDateInput(c.vencimento),
             dependentesCobrancaIds: c.dependentesCobrancaIds,
+            gateway: c.gateway,
           })),
         }),
       });
@@ -287,7 +311,22 @@ export function FinanceiroPanel({
       const erros = data.results?.filter((r: { success: boolean }) => !r.success) ?? [];
       const sucesso = data.results?.filter((r: { success: boolean }) => r.success) ?? [];
 
-      if (sucesso.length) toast.success(`${sucesso.length} assinatura(s) criada(s)`);
+      if (sucesso.length) {
+        const asaasN = sucesso.filter(
+          (r: { gateway?: string }) => r.gateway !== "infinity"
+        ).length;
+        const infN = sucesso.filter(
+          (r: { gateway?: string }) => r.gateway === "infinity"
+        ).length;
+        const parts = [];
+        if (asaasN) parts.push(`${asaasN} Asaas`);
+        if (infN) parts.push(`${infN} Infinity (fila dry-run)`);
+        toast.success(
+          parts.length
+            ? `Criado: ${parts.join(" · ")}`
+            : `${sucesso.length} cobrança(s) processada(s)`
+        );
+      }
       erros.forEach((e: { error: string }) => toast.error(e.error));
 
       setModalOpen(false);
@@ -368,7 +407,13 @@ export function FinanceiroPanel({
       <p className="text-sm text-slate-500">
         {search.trim()
           ? `${filtered.length} de ${pendentes.length} titular(es) encontrado(s)`
-          : `${pendentes.length} titular(es) sem assinatura (ativos e elegíveis)`}
+          : `${pendentes.length} titular(es) sem cobrança Asaas (ativos e elegíveis)`}
+        {ocultosInfinity > 0 && (
+          <span className="mt-1 block text-xs text-slate-400">
+            {ocultosInfinity} oculto(s): já na InfinitePay (fatura existente — não
+            gerar de novo).
+          </span>
+        )}
       </p>
 
       <TableScroll className="rounded-xl border border-slate-200 dark:border-slate-800">
@@ -383,6 +428,7 @@ export function FinanceiroPanel({
                 />
               </th>
               <th className="px-4 py-3 text-left font-medium">Nome</th>
+              <th className="px-4 py-3 text-left font-medium">Gateway</th>
               <th className="px-4 py-3 text-left font-medium">Plano</th>
               <th className="px-4 py-3 text-left font-medium">Telefone</th>
               <th className="px-4 py-3 text-left font-medium">Email</th>
@@ -399,6 +445,15 @@ export function FinanceiroPanel({
                   />
                 </td>
                 <td className="px-4 py-3 font-medium">{p.nome}</td>
+                <td className="px-4 py-3">
+                  <Badge
+                    variant={
+                      p.gatewaySugerido === "infinity" ? "warning" : "default"
+                    }
+                  >
+                    {p.gatewaySugerido === "infinity" ? "Infinity" : "Asaas"}
+                  </Badge>
+                </td>
                 <td className="px-4 py-3">{p.plano ?? "-"}</td>
                 <td className="px-4 py-3">{formatPhone(p.telefone)}</td>
                 <td className="px-4 py-3">{p.email ?? "-"}</td>
@@ -422,9 +477,12 @@ export function FinanceiroPanel({
           </DialogHeader>
           <div className="space-y-5">
             <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
-              Valor e descrição vêm do provedor (ou padrão global). A data de
-              vencimento fica em branco — preencha manualmente ou use a sugestão
-              do pré-cadastro WhatsApp quando o CPF coincidir.
+              Escolha o <strong>gateway</strong> de cada cliente (Asaas ou
+              Infinity). O sistema sugere conforme o cadastro/sync.{" "}
+              <strong>Asaas</strong> cria assinatura e pode enfileirar WhatsApp.{" "}
+              <strong>Infinity</strong> só enfileira job (dry-run) — não cria no
+              Asaas nem notifica de novo. Valor/descrição vêm do provedor; o
+              vencimento fica em branco até você preencher.
               {sugestoesPendentes > 0 && (
                 <span className="mt-1 block font-medium text-emerald-700 dark:text-emerald-300">
                   {sugestoesPendentes} cliente(s) com sugestão WhatsApp pendente.
@@ -544,6 +602,30 @@ export function FinanceiroPanel({
                       <div>
                         <label className="mb-1 block text-xs text-slate-500">CPF</label>
                         <Input value={c.cpf} readOnly className="bg-slate-100 dark:bg-slate-800" />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="mb-1 block text-xs text-slate-500">
+                          Gateway de pagamento *
+                        </label>
+                        <select
+                          className="flex h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm dark:border-slate-700 dark:bg-slate-950"
+                          value={c.gateway}
+                          onChange={(e) =>
+                            updateRevisao(c.id, "gateway", e.target.value)
+                          }
+                        >
+                          <option value="asaas">Asaas</option>
+                          <option value="infinity">InfinitePay</option>
+                        </select>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Sugerido:{" "}
+                          {c.gatewaySugerido === "infinity"
+                            ? "InfinitePay (já no sync/cadastro)"
+                            : "Asaas"}
+                          {c.gateway === "infinity"
+                            ? " · fila dry-run, sem notificar Asaas"
+                            : ""}
+                        </p>
                       </div>
                       <div>
                         <label className="mb-1 block text-xs text-slate-500">

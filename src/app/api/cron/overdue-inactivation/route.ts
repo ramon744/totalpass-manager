@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { processOverdueInactivations } from "@/lib/services/overdue-inactivation";
+import { processInfinityOverdueInactivations } from "@/lib/services/infinity-overdue-inactivation";
 
 export async function POST(request: NextRequest) {
   const authHeader = request.headers.get("authorization");
@@ -9,6 +10,7 @@ export async function POST(request: NextRequest) {
   }
 
   const supabase = await createServiceClient();
-  const result = await processOverdueInactivations(supabase);
-  return NextResponse.json(result);
+  const asaas = await processOverdueInactivations(supabase);
+  const infinity = await processInfinityOverdueInactivations(supabase);
+  return NextResponse.json({ asaas, infinity });
 }

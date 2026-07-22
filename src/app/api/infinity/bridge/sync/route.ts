@@ -37,7 +37,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let body: { customers?: InfinityCustomerSyncItem[] };
+  let body: {
+    customers?: InfinityCustomerSyncItem[];
+    listComplete?: boolean;
+    fetchedCount?: number;
+  };
   try {
     body = await request.json();
   } catch {
@@ -48,7 +52,7 @@ export async function POST(request: NextRequest) {
   if (customers.length === 0) {
     return infinityJson(
       request,
-      { ok: true, upserted: 0, linked: 0, overdueCount: 0 },
+      { ok: true, upserted: 0, linked: 0, overdueCount: 0, pruneSkipped: true },
       200,
       "POST, OPTIONS"
     );
@@ -58,7 +62,14 @@ export async function POST(request: NextRequest) {
     const result = await syncInfinityCustomers(
       auth.supabase,
       customers,
-      auth.userId
+      auth.userId,
+      {
+        listComplete: body.listComplete === true,
+        fetchedCount:
+          typeof body.fetchedCount === "number"
+            ? body.fetchedCount
+            : customers.length,
+      }
     );
     return infinityJson(
       request,

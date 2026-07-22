@@ -74,6 +74,17 @@ async function sendQueuedMessage(client: UazapiClient, msg: Mensagem) {
     return;
   }
 
+  if (msg.tipo_envio === "botao_link") {
+    const link =
+      (payload.link_pagamento || payload.link_fatura || "").trim();
+    if (!link) {
+      await client.sendText(msg.telefone, msg.mensagem);
+      return;
+    }
+    await client.sendLinkButton(msg.telefone, msg.mensagem, link);
+    return;
+  }
+
   await client.sendText(msg.telefone, msg.mensagem);
 }
 
@@ -119,11 +130,17 @@ export async function scheduleMessage(
   };
   const mensagem = renderTemplate(template.corpo, vars);
   const dedupeRef = params.asaasPaymentId ?? params.refId ?? null;
-  const payloadEnvio = {
+  const payloadEnvio: Record<string, string> = {
     ...asStringPayload(vars),
     ...(dedupeRef ? { ref_id: dedupeRef } : {}),
   };
-  const tipoEnvio = (template.tipo_envio ?? "texto") as TipoEnvioMensagem;
+  let tipoEnvio = (template.tipo_envio ?? "texto") as TipoEnvioMensagem;
+  if (tipoEnvio === "botao_link") {
+    const link = String(
+      payloadEnvio.link_pagamento || payloadEnvio.link_fatura || ""
+    ).trim();
+    if (!link) tipoEnvio = "texto";
+  }
 
   if (dedupeRef) {
     const { data: jaExiste } = await supabase

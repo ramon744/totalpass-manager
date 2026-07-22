@@ -88,6 +88,7 @@ export function ProvedorFormDialog({
     e.preventDefault();
     setLoading(true);
 
+    const diaTrim = form.dia_pagamento.trim();
     const payload = {
       nome: form.nome,
       beneficio: form.beneficio,
@@ -103,7 +104,7 @@ export function ProvedorFormDialog({
         return form.cobrar_dependentes ? null : null;
       })(),
       mensagem_padrao: form.mensagem_padrao,
-      dia_pagamento: Number(form.dia_pagamento),
+      dia_pagamento: diaTrim === "" ? null : Number(diaTrim),
     };
 
     try {
@@ -165,7 +166,7 @@ export function ProvedorFormDialog({
 
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Custo por colaborador cadastrado *
+              Custo por colaborador cadastrado
             </label>
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">
@@ -179,10 +180,12 @@ export function ProvedorFormDialog({
                 }
                 placeholder="0,00"
                 inputMode="numeric"
-                required
               />
             </div>
-            <p className="mt-1 text-xs text-slate-500">{custoPreview} por colaborador</p>
+            <p className="mt-1 text-xs text-slate-500">
+              {custoPreview} por colaborador — use R$ 0,00 se não houver custo
+              ao provedor.
+            </p>
           </div>
 
           <div>
@@ -268,7 +271,7 @@ export function ProvedorFormDialog({
 
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Dia de pagamento da fatura *
+              Dia de pagamento da fatura
             </label>
             <Input
               type="number"
@@ -276,10 +279,12 @@ export function ProvedorFormDialog({
               max={28}
               value={form.dia_pagamento}
               onChange={(e) => updateField("dia_pagamento", e.target.value)}
-              required
+              placeholder="Opcional"
             />
             <p className="mt-1 text-xs text-slate-500">
-              Dia {form.dia_pagamento || "?"} de cada mês para pagar a fatura do provedor.
+              {form.dia_pagamento
+                ? `Dia ${form.dia_pagamento} de cada mês para pagar a fatura do provedor.`
+                : "Deixe vazio se não houver dia de pagamento ao provedor."}
             </p>
           </div>
 

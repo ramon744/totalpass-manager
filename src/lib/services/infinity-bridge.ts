@@ -9,6 +9,10 @@ import { notifyAdminAlert } from "@/lib/services/admin-alerts";
 import { sendAdminEmail } from "@/lib/email/resend";
 import { UazapiClient, renderTemplate } from "@/lib/uazapi/client";
 import { normalizePhone } from "@/lib/utils";
+import {
+  coerceInfinityInvoiceStatus,
+  deriveInfinityCustomerStatusFromInvoices,
+} from "@/lib/infinity-payment-status";
 import type { ConfigInfinity } from "@/types/database";
 import { DEFAULT_INFINITY_CONFIG } from "@/types/database";
 
@@ -118,6 +122,8 @@ export async function upsertInfinityHeartbeat(
     lastError?: string | null;
     healthOk?: boolean | null;
     overdueCount?: number | null;
+    /** Extensão ainda tentando recuperar sessão — não alerta admin. */
+    recovering?: boolean | null;
   }
 ) {
   const { count: overdueCount } = await supabase
@@ -157,7 +163,7 @@ export async function upsertInfinityHeartbeat(
 
   if (error) throw new Error(error.message);
 
-  if (lastError && (!healthOk || !params.sessionOk)) {
+  if (lastError && (!healthOk || !params.sessionOk) && !params.recovering) {
     alertAdminInfinitySessionIssue(supabase, {
       installationId: params.installationId,
       error: lastError,
@@ -172,6 +178,21 @@ export async function upsertInfinityHeartbeat(
   };
 }
 
+export type InfinityInvoiceSyncItem = {
+  infinityInvoiceSlug: string;
+  infinityCustomerId: string;
+  infinitySubscriptionSlug?: string | null;
+  status: "overdue" | "pending" | "paid" | "unknown" | "inactive" | "cancelled";
+  amount?: number | null;
+  dueDate?: string | null;
+  paidAt?: string | null;
+  description?: string | null;
+  notifiedEmail?: boolean | null;
+  notifiedWhatsapp?: boolean | null;
+  notifications?: unknown;
+  raw?: Record<string, unknown>;
+};
+
 export type InfinityCustomerSyncItem = {
   infinityCustomerId: string;
   infinitySubscriptionSlug?: string | null;
@@ -182,6 +203,14 @@ export type InfinityCustomerSyncItem = {
   paymentStatus: "overdue" | "pending" | "paid" | "unknown" | "inactive";
   amount?: number | null;
   dueDate?: string | null;
+  paidAt?: string | null;
+  invoiceSlug?: string | null;
+  invoiceDescription?: string | null;
+  notifiedEmail?: boolean | null;
+  notifiedWhatsapp?: boolean | null;
+  lastNotifiedAt?: string | null;
+  invoiceDetails?: Record<string, unknown> | null;
+  invoices?: InfinityInvoiceSyncItem[];
   raw?: Record<string, unknown>;
 };
 
@@ -193,19 +222,35 @@ export type InfinityCustomerSyncItem = {
  * Após sync completo (lista não truncada), remove clientes que sumiram da Infinity
  * e rebaixa órfãos para gateway asaas.
  */
+
+/** Rejeita faturas fantasmas (syn-*) e slug de assinatura gravado como fatura. */
+function isRealInfinityInvoiceSlug(
+  invSlug: string,
+  subscriptionSlug: string | null
+): boolean {
+  if (!invSlug) return false;
+  if (invSlug.startsWith("syn-")) return false;
+  if (subscriptionSlug && invSlug === subscriptionSlug) return false;
+  // Handles reais da InfinitePay (ex.: Er6yaUhcY7)
+  return /^[A-Za-z0-9_-]{6,40}$/.test(invSlug);
+}
+
 export async function syncInfinityCustomers(
   supabase: SupabaseClient,
   items: InfinityCustomerSyncItem[],
-  userId?: string | null
+  userId?: string | null,
+  meta?: { listComplete?: boolean; fetchedCount?: number }
 ) {
   const now = new Date().toISOString();
   const MAX_SYNC = 500;
   const truncated = items.length > MAX_SYNC;
+  const listComplete = meta?.listComplete === true;
   let upserted = 0;
   let linked = 0;
   let removed = 0;
   let gatewayToInfinity = 0;
   let gatewayToAsaas = 0;
+  let pruneSkipped = false;
   const errors: string[] = [];
   const syncedIds: string[] = [];
 
@@ -274,6 +319,114 @@ export async function syncInfinityCustomers(
 
     if (beneficiarioId) linked++;
 
+    const invoiceSlugRaw = item.invoiceSlug?.trim() || null;
+    const invoiceSlugSafe = isRealInfinityInvoiceSlug(
+      invoiceSlugRaw || "",
+      slug
+    )
+      ? invoiceSlugRaw
+      : null;
+
+    const invoicesNormalized = (item.invoices ?? []).map((inv) => ({
+      ...inv,
+      status: coerceInfinityInvoiceStatus(inv.status, inv.paidAt),
+    }));
+    const derivedFromInvoices = deriveInfinityCustomerStatusFromInvoices(
+      invoicesNormalized.map((inv) => ({
+        status: inv.status,
+        paid_at: inv.paidAt ? String(inv.paidAt) : null,
+      }))
+    );
+    // Preferir faturas reais; lista do cliente só como fallback (não usar paidAt do snapshot para “forçar pago”).
+    const paymentStatusRaw = String(item.paymentStatus || "unknown").toLowerCase();
+    const paymentStatusFallback = [
+      "paid",
+      "manually_paid",
+      "paid_plans_invoices",
+      "settled",
+    ].includes(paymentStatusRaw)
+      ? "paid"
+      : ["overdue", "pending", "inactive"].includes(paymentStatusRaw)
+        ? paymentStatusRaw
+        : "unknown";
+    const paymentStatus = derivedFromInvoices || paymentStatusFallback;
+
+    const paidAtFromInvoices = invoicesNormalized
+      .map((inv) => (inv.paidAt ? String(inv.paidAt) : null))
+      .filter(Boolean)
+      .sort()
+      .at(-1);
+    const amountFromInvoices = invoicesNormalized.find(
+      (inv) => inv.amount != null
+    )?.amount;
+    const dueFromInvoices = invoicesNormalized.find((inv) => inv.dueDate)
+      ?.dueDate;
+
+    // Não apagar valor/Pago em já gravados quando o enrich parcial vem sem faturas
+    // (rate limit / cota). Também backfill a partir de infinity_invoices existentes.
+    const { data: existingStatus } = await supabase
+      .from("infinity_customer_status")
+      .select("amount, due_date, paid_at, invoice_details, invoice_slug")
+      .eq("infinity_customer_id", customerId)
+      .maybeSingle();
+
+    let paidAtFromDb: string | null = null;
+    let amountFromDb: number | null = null;
+    let dueFromDb: string | null = null;
+    if (
+      paymentStatus === "paid" &&
+      !item.paidAt &&
+      !paidAtFromInvoices &&
+      (!existingStatus?.paid_at ||
+        existingStatus?.amount == null ||
+        !existingStatus?.due_date)
+    ) {
+      const { data: dbInv } = await supabase
+        .from("infinity_invoices")
+        .select("amount, due_date, paid_at")
+        .eq("infinity_customer_id", customerId)
+        .eq("status", "paid")
+        .not("paid_at", "is", null)
+        .order("paid_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (dbInv?.paid_at) paidAtFromDb = String(dbInv.paid_at);
+      if (dbInv?.amount != null) amountFromDb = Number(dbInv.amount);
+      if (dbInv?.due_date) dueFromDb = String(dbInv.due_date).slice(0, 10);
+    }
+
+    const nextAmount =
+      item.amount != null
+        ? Number(item.amount)
+        : amountFromInvoices != null
+          ? Number(amountFromInvoices)
+          : existingStatus?.amount != null
+            ? Number(existingStatus.amount)
+            : amountFromDb;
+    const nextDue = item.dueDate
+      ? String(item.dueDate).slice(0, 10)
+      : dueFromInvoices
+        ? String(dueFromInvoices).slice(0, 10)
+        : existingStatus?.due_date
+          ? String(existingStatus.due_date).slice(0, 10)
+          : dueFromDb;
+    const nextPaidAt =
+      paymentStatus === "paid"
+        ? item.paidAt
+          ? String(item.paidAt)
+          : paidAtFromInvoices ||
+            (existingStatus?.paid_at
+              ? String(existingStatus.paid_at)
+              : null) ||
+            paidAtFromDb
+        : null;
+
+    const incomingDetails = item.invoiceDetails ?? {};
+    const keepExistingDetails =
+      Object.keys(incomingDetails).length === 0 &&
+      existingStatus?.invoice_details &&
+      typeof existingStatus.invoice_details === "object";
+
     const { error } = await supabase.from("infinity_customer_status").upsert(
       {
         infinity_customer_id: customerId,
@@ -282,9 +435,24 @@ export async function syncInfinityCustomers(
         document_number: document,
         email: item.email?.trim() || null,
         phone: item.phone?.trim() || null,
-        payment_status: item.paymentStatus || "unknown",
-        amount: item.amount != null ? Number(item.amount) : null,
-        due_date: item.dueDate ? String(item.dueDate).slice(0, 10) : null,
+        payment_status: paymentStatus,
+        amount: nextAmount ?? null,
+        due_date: nextDue ?? null,
+        paid_at: nextPaidAt,
+        invoice_slug: invoiceSlugSafe || existingStatus?.invoice_slug || null,
+        invoice_description: item.invoiceDescription?.trim() || null,
+        notified_email:
+          item.notifiedEmail == null ? null : Boolean(item.notifiedEmail),
+        notified_whatsapp:
+          item.notifiedWhatsapp == null
+            ? null
+            : Boolean(item.notifiedWhatsapp),
+        last_notified_at: item.lastNotifiedAt
+          ? String(item.lastNotifiedAt)
+          : null,
+        invoice_details: keepExistingDetails
+          ? existingStatus!.invoice_details
+          : incomingDetails,
         beneficiario_id: beneficiarioId,
         raw: item.raw ?? {},
         synced_at: now,
@@ -299,10 +467,97 @@ export async function syncInfinityCustomers(
     }
     upserted++;
     syncedIds.push(customerId);
+
+    // Faturas detalhadas (opcional) — só leitura; não cria Asaas / não notifica
+    const keptInvoiceSlugs: string[] = [];
+    for (const inv of invoicesNormalized) {
+      const invSlug = String(inv.infinityInvoiceSlug || "").trim();
+      if (!isRealInfinityInvoiceSlug(invSlug, slug)) continue;
+      keptInvoiceSlugs.push(invSlug);
+      const invStatus = coerceInfinityInvoiceStatus(inv.status, inv.paidAt);
+      const { error: invErr } = await supabase.from("infinity_invoices").upsert(
+        {
+          infinity_invoice_slug: invSlug,
+          infinity_customer_id: customerId,
+          infinity_subscription_slug:
+            inv.infinitySubscriptionSlug?.trim() || slug,
+          beneficiario_id: beneficiarioId,
+          status: invStatus,
+          amount: inv.amount != null ? Number(inv.amount) : null,
+          due_date: inv.dueDate ? String(inv.dueDate).slice(0, 10) : null,
+          paid_at: inv.paidAt ? String(inv.paidAt) : null,
+          description: inv.description?.trim() || null,
+          notified_email:
+            inv.notifiedEmail == null ? null : Boolean(inv.notifiedEmail),
+          notified_whatsapp:
+            inv.notifiedWhatsapp == null
+              ? null
+              : Boolean(inv.notifiedWhatsapp),
+          notifications: inv.notifications ?? [],
+          raw: inv.raw ?? {},
+          synced_at: now,
+          updated_at: now,
+        },
+        { onConflict: "infinity_invoice_slug" }
+      );
+      if (invErr) {
+        errors.push(`${customerId}/inv ${invSlug}: ${invErr.message}`);
+      }
+    }
+
+    // Remove só fantasmas (syn-* / slug de assinatura).
+    // Não apaga faturas reais ausentes do batch (enrich parcial).
+    const keptSet = new Set(keptInvoiceSlugs);
+    const { data: existingInvs } = await supabase
+      .from("infinity_invoices")
+      .select("infinity_invoice_slug")
+      .eq("infinity_customer_id", customerId);
+    const invoiceListComplete =
+      item.invoiceDetails?.invoiceListComplete === true;
+    const toDelete = (existingInvs ?? [])
+      .map((r) => String(r.infinity_invoice_slug || ""))
+      .filter((s) => {
+        if (!s) return false;
+        if (keptSet.has(s)) return false;
+        if (s.startsWith("syn-")) return true;
+        if (slug != null && s === slug) return true;
+        // Só replace completo quando a extensão marcou lista completa
+        if (invoiceListComplete && keptSet.size > 0) return true;
+        return false;
+      });
+    if (toDelete.length > 0) {
+      const { error: pruneInvErr } = await supabase
+        .from("infinity_invoices")
+        .delete()
+        .in("infinity_invoice_slug", toDelete);
+      if (pruneInvErr) {
+        errors.push(`${customerId}/prune-inv: ${pruneInvErr.message}`);
+      }
+    }
   }
 
   // Sync completo: remove quem não veio nesta leva (excluídos na InfinitePay).
-  if (!truncated && syncedIds.length > 0) {
+  // Safeguard: exige listComplete + lista >= 80% do que já existia (anti demote em sync parcial).
+  const { count: existingBefore } = await supabase
+    .from("infinity_customer_status")
+    .select("id", { count: "exact", head: true });
+  const existingCount = existingBefore ?? 0;
+  const minForPrune =
+    existingCount === 0 ? 1 : Math.max(10, Math.floor(existingCount * 0.8));
+  const allowPrune =
+    !truncated &&
+    listComplete &&
+    syncedIds.length > 0 &&
+    syncedIds.length >= minForPrune;
+
+  if (!truncated && syncedIds.length > 0 && !allowPrune) {
+    pruneSkipped = true;
+    errors.push(
+      `prune-skipped: listComplete=${listComplete} synced=${syncedIds.length} min=${minForPrune} existing=${existingCount}`
+    );
+  }
+
+  if (allowPrune) {
     const { error: delErr, count } = await supabase
       .from("infinity_customer_status")
       .delete({ count: "exact" })
@@ -370,6 +625,8 @@ export async function syncInfinityCustomers(
       gateway_to_infinity: gatewayToInfinity,
       gateway_to_asaas: gatewayToAsaas,
       truncated,
+      list_complete: listComplete,
+      prune_skipped: pruneSkipped,
       errors: errors.slice(0, 10),
     },
   });
@@ -386,6 +643,8 @@ export async function syncInfinityCustomers(
     gatewayToInfinity,
     gatewayToAsaas,
     overdueCount: overdueCount ?? 0,
+    pruneSkipped,
+    listComplete,
     errors: errors.slice(0, 20),
   };
 }
@@ -427,7 +686,7 @@ export async function getInfinityStatusSummary(supabase: SupabaseClient) {
   };
 }
 
-async function resolveInfinityAdminContacts(supabase: SupabaseClient) {
+export async function resolveInfinityAdminContacts(supabase: SupabaseClient) {
   const infinity = await getInfinityConfig(supabase);
   const bridge = await getBridgeConfigRaw(supabase);
   return {

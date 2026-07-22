@@ -101,6 +101,21 @@ export class UazapiClient {
     ]);
   }
 
+  /** Botão único com URL (ex.: aviso de desvínculo Infinity — só link de pagamento). */
+  async sendLinkButton(
+    phone: string,
+    text: string,
+    link: string,
+    label = "Pagar agora"
+  ) {
+    return this.sendMenuButtons(
+      phone,
+      text,
+      [`${label}|${link}`],
+      "Toque no botão para abrir o pagamento"
+    );
+  }
+
   /** Lista etiquetas (labels) da instância WhatsApp. */
   async listLabels(): Promise<Record<string, unknown>[]> {
     const response = await fetch(`${this.baseUrl}/labels`, {

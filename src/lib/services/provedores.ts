@@ -41,13 +41,17 @@ export function isProvedorCompleto(input: {
   valor_dependente?: number | null;
   mensagem_padrao?: string | null;
 }) {
+  // Custo/dia ao provedor são opcionais (ex.: sem custo por colaborador).
+  const diaOk =
+    input.dia_pagamento == null ||
+    (input.dia_pagamento >= 1 && input.dia_pagamento <= 28);
+  const custoOk =
+    input.custo_colaborador == null || input.custo_colaborador >= 0;
+
   return Boolean(
     input.beneficio?.trim() &&
-      input.custo_colaborador != null &&
-      input.custo_colaborador > 0 &&
-      input.dia_pagamento != null &&
-      input.dia_pagamento >= 1 &&
-      input.dia_pagamento <= 28 &&
+      custoOk &&
+      diaOk &&
       input.valor_cobrado_mensal != null &&
       input.valor_cobrado_mensal > 0 &&
       (!input.cobrar_dependentes ||
@@ -60,12 +64,29 @@ function validateInput(input: ProvedorInput) {
   const nome = normalizeNomeProvedor(input.nome);
   if (!nome) throw new Error("Nome da empresa é obrigatório");
   if (!input.beneficio?.trim()) throw new Error("Benefício é obrigatório");
-  if (!input.custo_colaborador || input.custo_colaborador <= 0) {
-    throw new Error("Custo por colaborador deve ser maior que zero");
+
+  const custoRaw = input.custo_colaborador;
+  if (custoRaw != null && Number(custoRaw) < 0) {
+    throw new Error("Custo por colaborador não pode ser negativo");
   }
-  if (!input.dia_pagamento || input.dia_pagamento < 1 || input.dia_pagamento > 28) {
-    throw new Error("Dia de pagamento deve ser entre 1 e 28");
+  // 0 ou vazio = sem custo ao provedor
+  const custo_colaborador =
+    custoRaw == null || Number(custoRaw) === 0 ? null : Number(custoRaw);
+
+  let dia_pagamento: number | null = null;
+  if (
+    input.dia_pagamento != null &&
+    String(input.dia_pagamento).trim() !== "" &&
+    !Number.isNaN(Number(input.dia_pagamento))
+  ) {
+    const dia = Number(input.dia_pagamento);
+    if (dia < 1 || dia > 28) {
+      throw new Error("Dia de pagamento deve ser entre 1 e 28 (ou vazio)");
+    }
+    dia_pagamento = dia;
   }
+  // Sem custo → não exige dia; se informar dia sem custo, ainda ok (só referência)
+
   if (!input.valor_cobrado_mensal || input.valor_cobrado_mensal <= 0) {
     throw new Error("Valor cobrado mensal do cliente deve ser maior que zero");
   }
@@ -78,8 +99,8 @@ function validateInput(input: ProvedorInput) {
   return {
     nome,
     beneficio: input.beneficio.trim(),
-    custo_colaborador: input.custo_colaborador,
-    dia_pagamento: input.dia_pagamento,
+    custo_colaborador,
+    dia_pagamento,
     valor_cobrado_mensal: input.valor_cobrado_mensal,
     cobrar_dependentes: Boolean(input.cobrar_dependentes),
     valor_dependente:

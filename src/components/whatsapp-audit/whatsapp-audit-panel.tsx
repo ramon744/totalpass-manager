@@ -19,6 +19,7 @@ import { formatCpf, formatPhone } from "@/lib/utils";
 import type {
   WhatsappAuditGrupo,
   WhatsappAuditItem,
+  WhatsappAuditMatchPor,
   WhatsappAuditResult,
 } from "@/lib/services/whatsapp-audit";
 
@@ -38,6 +39,13 @@ const grupoVariant: Record<
   bate: "success",
   so_whatsapp: "warning",
   so_manager: "danger",
+};
+
+const matchPorLabel: Record<WhatsappAuditMatchPor, string> = {
+  manager_phone: "Tel. Manager",
+  infinity_phone: "Tel. Infinity",
+  email: "E-mail",
+  cpf: "CPF",
 };
 
 function formatTel(value: string | null | undefined) {
@@ -85,6 +93,55 @@ function TelefoneCell({
       display={formatTel(telefone)}
       mode="phone"
     />
+  );
+}
+
+function TelefonesAuditCell({ item }: { item: WhatsappAuditItem }) {
+  const hasManager = Boolean(item.beneficiario_telefone);
+  const hasInfinity = Boolean(item.infinity_telefone);
+
+  if (item.grupo === "so_whatsapp") {
+    return (
+      <TelefoneCell telefone={item.wa_telefone} oculto={item.telefone_oculto} />
+    );
+  }
+
+  if (!hasManager && !hasInfinity) {
+    return (
+      <TelefoneCell telefone={item.wa_telefone} oculto={item.telefone_oculto} />
+    );
+  }
+
+  return (
+    <div className="space-y-1 text-xs">
+      {hasManager ? (
+        <div>
+          <span className="text-slate-400">Manager · </span>
+          <CopyableValue
+            value={item.beneficiario_telefone}
+            display={formatTel(item.beneficiario_telefone)}
+            mode="phone"
+          />
+        </div>
+      ) : (
+        <div className="text-slate-400">Manager · —</div>
+      )}
+      {hasInfinity ? (
+        <div>
+          <span className="text-slate-400">Infinity · </span>
+          <CopyableValue
+            value={item.infinity_telefone}
+            display={formatTel(item.infinity_telefone)}
+            mode="phone"
+          />
+        </div>
+      ) : (
+        <div className="text-slate-400">Infinity · —</div>
+      )}
+      {item.telefones_divergentes ? (
+        <div className="text-amber-700 dark:text-amber-300">Divergentes</div>
+      ) : null}
+    </div>
   );
 }
 
@@ -136,7 +193,10 @@ export function WhatsappAuditPanel() {
         item.wa_nome,
         item.beneficiario_cpf,
         item.beneficiario_telefone,
+        item.infinity_telefone,
+        item.beneficiario_email,
         item.wa_telefone,
+        item.match_por ? matchPorLabel[item.match_por] : null,
         ...(item.etiquetas || []),
       ]
         .filter(Boolean)
@@ -158,7 +218,8 @@ export function WhatsappAuditPanel() {
             <CardDescription>
               Cruza chats com etiqueta <strong>Cliente TotalPass</strong> ou{" "}
               <strong>Cliente Gympass</strong> (mesmo com CANCELADO junto) com
-              os telefones dos beneficiários. Pode levar alguns segundos.
+              telefone do Manager, WhatsApp da Infinity e e-mail. Pode levar
+              alguns segundos.
             </CardDescription>
           </div>
           <Button
@@ -179,17 +240,17 @@ export function WhatsappAuditPanel() {
               <ResumoCard
                 title="Batem"
                 value={data.resumo.bate}
-                hint="Etiqueta WA + telefone no Manager"
+                hint="Etiqueta WA + identidade (tel./e-mail)"
               />
               <ResumoCard
                 title="Só WhatsApp"
                 value={data.resumo.so_whatsapp}
-                hint="Tem etiqueta, não está no Manager"
+                hint="Tem etiqueta, sem match no cadastro"
               />
               <ResumoCard
                 title="Só Manager"
                 value={data.resumo.so_manager}
-                hint="Titular ativo/elegível sem etiqueta"
+                hint="Titular ativo/elegível sem etiqueta WA"
               />
               <ResumoCard
                 title="WA TotalPass"
@@ -219,7 +280,7 @@ export function WhatsappAuditPanel() {
         <CardHeader>
           <CardTitle>Resultados</CardTitle>
           <CardDescription>
-            Filtre por grupo, etiqueta ou busque por nome/telefone/CPF.
+            Filtre por grupo, etiqueta ou busque por nome, telefone Manager/Infinity, e-mail ou CPF.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -228,7 +289,7 @@ export function WhatsappAuditPanel() {
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <Input
                 className="pl-9"
-                placeholder="Buscar nome, telefone ou CPF…"
+                placeholder="Buscar nome, tel. Manager/Infinity, e-mail ou CPF…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
               />
@@ -290,13 +351,14 @@ export function WhatsappAuditPanel() {
             </p>
           ) : (
             <TableScroll>
-              <table className="w-full min-w-[900px] text-sm">
+              <table className="w-full min-w-[1040px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-slate-500 dark:border-slate-800">
                     <th className="px-3 py-2 font-medium">Grupo</th>
                     <th className="px-3 py-2 font-medium">WhatsApp</th>
                     <th className="px-3 py-2 font-medium">Manager</th>
-                    <th className="px-3 py-2 font-medium">Telefone</th>
+                    <th className="px-3 py-2 font-medium">Telefones</th>
+                    <th className="px-3 py-2 font-medium">Match</th>
                     <th className="px-3 py-2 font-medium">Etiquetas</th>
                     <th className="px-3 py-2 font-medium">Status</th>
                   </tr>
@@ -358,19 +420,36 @@ export function WhatsappAuditPanel() {
                             />
                           </div>
                         ) : null}
+                        {item.beneficiario_email ? (
+                          <div className="text-xs text-slate-500">
+                            <CopyableValue
+                              value={item.beneficiario_email}
+                              mode="email"
+                            />
+                          </div>
+                        ) : null}
                       </td>
                       <td className="px-3 py-2">
-                        {item.beneficiario_telefone ? (
-                          <CopyableValue
-                            value={item.beneficiario_telefone}
-                            display={formatTel(item.beneficiario_telefone)}
-                            mode="phone"
-                          />
+                        <TelefonesAuditCell item={item} />
+                      </td>
+                      <td className="px-3 py-2">
+                        {item.match_por ? (
+                          <div className="space-y-1">
+                            <Badge variant="info">
+                              {matchPorLabel[item.match_por]}
+                            </Badge>
+                            {item.telefones_divergentes ? (
+                              <p className="text-xs text-amber-700 dark:text-amber-300">
+                                Manager ≠ Infinity
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : item.telefones_divergentes ? (
+                          <p className="text-xs text-amber-700 dark:text-amber-300">
+                            Manager ≠ Infinity
+                          </p>
                         ) : (
-                          <TelefoneCell
-                            telefone={item.wa_telefone}
-                            oculto={item.telefone_oculto}
-                          />
+                          <span className="text-slate-400">—</span>
                         )}
                       </td>
                       <td className="px-3 py-2">

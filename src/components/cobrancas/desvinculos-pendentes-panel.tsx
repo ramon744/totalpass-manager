@@ -47,6 +47,7 @@ export function DesvinculosPendentesPanel({
                 {formatCpf(p.cpf)} · venc.{" "}
                 {p.vencimento.split("-").reverse().join("/")} · limite{" "}
                 {p.dataLimite.split("-").reverse().join("/")}
+                {p.gateway === "infinity" ? " · Infinity" : ""}
                 {p.temAssinaturaAtiva ? " · assinatura ativa" : ""}
               </p>
             </div>
