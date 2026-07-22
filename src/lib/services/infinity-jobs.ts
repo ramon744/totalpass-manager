@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getInfinityConfigRaw } from "@/lib/config";
 import { createLog } from "@/lib/logger";
+import { alertAdminInfinityJobFailed } from "@/lib/services/infinity-bridge";
 
 export type InfinityJobTipo = "create_charge" | "cancel_subscription";
 export type InfinityJobStatus =
@@ -142,7 +143,10 @@ export async function markInfinityCreatedAfterCharge(
   if (!customerId && !subscriptionSlug) return { updated: false };
 
   const now = new Date().toISOString();
-  const benPatch: Record<string, unknown> = { updated_at: now };
+  const benPatch: Record<string, unknown> = {
+    updated_at: now,
+    gateway_pagamento: "infinity",
+  };
   if (customerId) benPatch.infinity_customer_id = customerId;
   if (subscriptionSlug) benPatch.infinity_subscription_slug = subscriptionSlug;
 
@@ -253,8 +257,21 @@ export async function enqueueInfinityJob(
   if (ben.perfil !== "titular") {
     throw new Error("Só titulares podem ter jobs Infinity");
   }
-  if (ben.gateway_pagamento !== "infinity") {
+  // create_charge: pode enfileirar antes de marcar gateway (só marca no sucesso).
+  // cancel_subscription: exige gateway Infinity.
+  if (
+    params.tipo === "cancel_subscription" &&
+    ben.gateway_pagamento !== "infinity"
+  ) {
     throw new Error("Beneficiário não está no gateway Infinity");
+  }
+  if (
+    params.tipo === "create_charge" &&
+    ben.gateway_pagamento &&
+    ben.gateway_pagamento !== "infinity" &&
+    ben.gateway_pagamento !== "asaas"
+  ) {
+    throw new Error("Gateway do beneficiário inválido para Infinity");
   }
 
   let subscriptionSlug = ben.infinity_subscription_slug
@@ -298,6 +315,17 @@ export async function enqueueInfinityJob(
     params.idempotencyKey ||
     `${params.tipo}:${params.beneficiarioId}:${new Date().toISOString().slice(0, 10)}`;
 
+  const extra = (params.payload ?? {}) as Record<string, unknown>;
+  const mergedPayload: Record<string, unknown> = {
+    ...extra,
+    nome: String(extra.nome || ben.nome || "").trim() || ben.nome,
+    cpf: String(extra.cpf || ben.cpf || "").trim() || ben.cpf,
+    telefone:
+      String(extra.telefone || ben.telefone || "").replace(/\D/g, "") ||
+      null,
+    email: String(extra.email || ben.email || "").trim() || null,
+  };
+
   const { data: existing } = await supabase
     .from("infinity_jobs")
     .select("*")
@@ -305,7 +333,37 @@ export async function enqueueInfinityJob(
     .maybeSingle();
 
   if (existing) {
-    if (["pending", "claimed", "running", "succeeded"].includes(existing.status)) {
+    if (["claimed", "running", "succeeded"].includes(existing.status)) {
+      return existing as InfinityJob;
+    }
+    // pending/failed create_charge: completa payload (ex. telefone) e reabre
+    if (
+      params.tipo === "create_charge" &&
+      ["pending", "failed"].includes(existing.status)
+    ) {
+      const nowFix = new Date().toISOString();
+      const { data: fixed, error: fixErr } = await supabase
+        .from("infinity_jobs")
+        .update({
+          status: "pending",
+          payload: {
+            ...((existing.payload as Record<string, unknown>) ?? {}),
+            ...mergedPayload,
+          },
+          last_error: null,
+          claimed_at: null,
+          claimed_by: null,
+          run_after: nowFix,
+          updated_at: nowFix,
+          completed_at: null,
+        })
+        .eq("id", existing.id)
+        .select()
+        .single();
+      if (fixErr) throw new Error(fixErr.message);
+      return fixed as InfinityJob;
+    }
+    if (existing.status === "pending") {
       return existing as InfinityJob;
     }
   }
@@ -320,13 +378,7 @@ export async function enqueueInfinityJob(
         beneficiario_id: ben.id,
         infinity_customer_id: customerId,
         infinity_subscription_slug: subscriptionSlug,
-        payload: {
-          nome: ben.nome,
-          cpf: ben.cpf,
-          telefone: ben.telefone,
-          email: ben.email,
-          ...(params.payload ?? {}),
-        },
+        payload: mergedPayload,
         idempotency_key: idempotencyKey,
         dry_run: cfg.dry_run !== false,
         attempts: 0,
@@ -496,6 +548,21 @@ export async function reportInfinityJobResult(
       exhausted,
     },
   });
+
+  // Falha definitiva: avisa admin (evita achar que a cobrança foi criada).
+  if (exhausted) {
+    try {
+      await alertAdminInfinityJobFailed(supabase, {
+        jobId: params.jobId,
+        tipo: job.tipo as InfinityJobTipo,
+        beneficiarioId: job.beneficiario_id,
+        error: params.error?.slice(0, 400) || "falha sem detalhe",
+        attempts: job.attempts,
+      });
+    } catch {
+      // não bloqueia o report do job
+    }
+  }
 
   return data as InfinityJob;
 }

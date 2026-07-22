@@ -105,11 +105,13 @@ export async function POST(request: NextRequest) {
 
     try {
       if (gateway === "infinity") {
-        // Marca gateway Infinity e enfileira create_charge (extensão cria cliente+fatura).
-        // Não toca no Asaas nem na fila WhatsApp daqui.
+        // Enfileira create_charge; gateway Infinity só é marcado no SUCCEEDED.
+        // Assim, se falhar, o cliente continua no Financeiro.
         const { data: ben, error: benErr } = await serviceClient
           .from("beneficiarios")
-          .select("id, perfil, gateway_pagamento, telefone, nome, email, cpf")
+          .select(
+            "id, perfil, gateway_pagamento, telefone, nome, email, cpf, infinity_customer_id"
+          )
           .eq("id", cliente.id)
           .maybeSingle();
         if (benErr || !ben) {
@@ -118,20 +120,23 @@ export async function POST(request: NextRequest) {
         if (ben.perfil !== "titular") {
           throw new Error("Só titulares podem ir para Infinity");
         }
+        if (ben.infinity_customer_id) {
+          throw new Error(
+            "Cliente já tem ID Infinity — confira Cobranças Infinity ou sincronize"
+          );
+        }
 
         const now = new Date().toISOString();
-        const patch: Record<string, unknown> = {
-          gateway_pagamento: "infinity",
-          updated_at: now,
-        };
+        const patch: Record<string, unknown> = { updated_at: now };
         if (cliente.nome?.trim()) patch.nome = cliente.nome.trim();
         if (cliente.telefone) patch.telefone = String(cliente.telefone);
-
-        const { error: upErr } = await serviceClient
-          .from("beneficiarios")
-          .update(patch)
-          .eq("id", cliente.id);
-        if (upErr) throw new Error(upErr.message);
+        if (Object.keys(patch).length > 1) {
+          const { error: upErr } = await serviceClient
+            .from("beneficiarios")
+            .update(patch)
+            .eq("id", cliente.id);
+          if (upErr) throw new Error(upErr.message);
+        }
 
         await enqueueInfinityJob(serviceClient, {
           tipo: "create_charge",
@@ -149,19 +154,38 @@ export async function POST(request: NextRequest) {
           userId: user.id,
         });
 
-        results.push({ id: cliente.id, success: true, gateway: "infinity" });
+        results.push({
+          id: cliente.id,
+          success: true,
+          gateway: "infinity",
+          enqueued: true,
+        });
         continue;
       }
 
-      // Segurança: não criar Asaas se já está marcado Infinity
+      // Segurança: não criar Asaas se já tem cliente Infinity real.
+      // Limbo (gateway infinity sem id) pode gerar Asaas ou reenfileirar Infinity.
       const { data: check } = await serviceClient
         .from("beneficiarios")
-        .select("gateway_pagamento")
+        .select("gateway_pagamento, infinity_customer_id")
         .eq("id", cliente.id)
         .maybeSingle();
-      if (check?.gateway_pagamento === "infinity") {
+      if (check?.infinity_customer_id) {
         throw new Error(
           "Cliente já está no gateway Infinity — não gere fatura Asaas"
+        );
+      }
+      const { data: jobAberto } = await serviceClient
+        .from("infinity_jobs")
+        .select("id, status")
+        .eq("beneficiario_id", cliente.id)
+        .eq("tipo", "create_charge")
+        .in("status", ["pending", "claimed", "running"])
+        .limit(1)
+        .maybeSingle();
+      if (jobAberto) {
+        throw new Error(
+          "Já existe criação Infinity na fila para este cliente — aguarde a extensão"
         );
       }
 

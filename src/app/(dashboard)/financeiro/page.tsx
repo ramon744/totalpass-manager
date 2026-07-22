@@ -23,6 +23,7 @@ export default async function FinanceiroPage() {
     { data: provedores },
     { data: preCadastros },
     { data: infinityRows },
+    { data: infinityJobs },
     financeiro,
   ] = await Promise.all([
     supabase
@@ -40,6 +41,13 @@ export default async function FinanceiroPage() {
       .from("infinity_customer_status")
       .select("beneficiario_id, document_number, payment_status, nome")
       .limit(500),
+    service
+      .from("infinity_jobs")
+      .select("id, beneficiario_id, status, last_error, updated_at")
+      .eq("tipo", "create_charge")
+      .in("status", ["pending", "claimed", "running", "failed"])
+      .order("updated_at", { ascending: false })
+      .limit(200),
     getFinanceiroConfig(supabase),
   ]);
 
@@ -68,6 +76,18 @@ export default async function FinanceiroPage() {
     }
   }
 
+  const jobByBeneficiario = new Map<
+    string,
+    { status: string; last_error: string | null }
+  >();
+  for (const j of infinityJobs ?? []) {
+    if (!j.beneficiario_id || jobByBeneficiario.has(j.beneficiario_id)) continue;
+    jobByBeneficiario.set(j.beneficiario_id, {
+      status: j.status,
+      last_error: j.last_error,
+    });
+  }
+
   const titulares = (beneficiariosCobraveis ?? [])
     .filter((b) => b.perfil === "titular")
     .map((t) => ({
@@ -77,9 +97,12 @@ export default async function FinanceiroPage() {
       ) as Beneficiario[],
     }));
 
-  /** Já cobrados na Infinity (gateway ou sync) — não listar para gerar Asaas. */
+  /**
+   * Só esconde do Financeiro quem REALMENTE tem cobrança Infinity
+   * (id do cliente ou snapshot de sync). Gateway=infinity sem id = limbo → lista.
+   */
   function jaCobertoInfinity(t: Beneficiario) {
-    if (t.gateway_pagamento === "infinity") return true;
+    if (t.infinity_customer_id) return true;
     if (infinityByBeneficiarioId.has(t.id)) return true;
     const cpf = digitsOnly(t.cpf);
     if (cpf && infinityByCpf.has(cpf)) return true;
@@ -95,9 +118,9 @@ export default async function FinanceiroPage() {
     .map((t) => {
       const cpf = digitsOnly(t.cpf);
       const hint = cpf ? infinityByCpf.get(cpf) : undefined;
-      // Sugestão residual (ex.: sync parcial) — na prática filtrados acima
+      const job = jobByBeneficiario.get(t.id);
       const gatewaySugerido =
-        t.gateway_pagamento === "infinity" || hint
+        t.gateway_pagamento === "infinity" || hint || job
           ? ("infinity" as const)
           : ("asaas" as const);
       return {
@@ -109,6 +132,8 @@ export default async function FinanceiroPage() {
               nome: hint.nome,
             }
           : null,
+        infinityJobStatus: job?.status ?? null,
+        infinityJobError: job?.last_error ?? null,
       };
     });
 
@@ -119,6 +144,7 @@ export default async function FinanceiroPage() {
           "beneficiarios",
           "assinaturas",
           "infinity_customer_status",
+          "infinity_jobs",
         ]}
       />
       <BackgroundSync tipo="subscriptions" />

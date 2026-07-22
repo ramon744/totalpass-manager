@@ -59,6 +59,8 @@ type PendenteFinanceiro = Beneficiario & {
   dependentes?: Beneficiario[];
   gatewaySugerido?: GatewayPagamento;
   infinityHint?: { payment_status: string; nome: string | null } | null;
+  infinityJobStatus?: string | null;
+  infinityJobError?: string | null;
 };
 
 function valorToMask(value: number) {
@@ -319,11 +321,11 @@ export function FinanceiroPanel({
           (r: { gateway?: string }) => r.gateway === "infinity"
         ).length;
         const parts = [];
-        if (asaasN) parts.push(`${asaasN} Asaas`);
-        if (infN) parts.push(`${infN} Infinity (fila create_charge)`);
+        if (asaasN) parts.push(`${asaasN} Asaas (criado)`);
+        if (infN) parts.push(`${infN} Infinity (enfileirado — aguarda extensão)`);
         toast.success(
           parts.length
-            ? `Criado: ${parts.join(" · ")}`
+            ? parts.join(" · ")
             : `${sucesso.length} cobrança(s) processada(s)`
         );
       }
@@ -446,13 +448,26 @@ export function FinanceiroPanel({
                 </td>
                 <td className="px-4 py-3 font-medium">{p.nome}</td>
                 <td className="px-4 py-3">
-                  <Badge
-                    variant={
-                      p.gatewaySugerido === "infinity" ? "warning" : "default"
-                    }
-                  >
-                    {p.gatewaySugerido === "infinity" ? "Infinity" : "Asaas"}
-                  </Badge>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <Badge
+                      variant={
+                        p.gatewaySugerido === "infinity" ? "warning" : "default"
+                      }
+                    >
+                      {p.gatewaySugerido === "infinity" ? "Infinity" : "Asaas"}
+                    </Badge>
+                    {p.infinityJobStatus === "failed" && (
+                      <Badge variant="danger">
+                        Infinity falhou
+                      </Badge>
+                    )}
+                    {p.infinityJobStatus &&
+                      ["pending", "claimed", "running"].includes(
+                        p.infinityJobStatus
+                      ) && (
+                        <Badge variant="warning">Infinity na fila</Badge>
+                      )}
+                  </div>
                 </td>
                 <td className="px-4 py-3">{p.plano ?? "-"}</td>
                 <td className="px-4 py-3">{formatPhone(p.telefone)}</td>

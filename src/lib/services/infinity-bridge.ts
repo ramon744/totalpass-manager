@@ -729,6 +729,64 @@ export async function alertAdminInfinitySessionIssue(
   });
 }
 
+/** Falha definitiva de create_charge / cancel — evita achar que a cobrança existe. */
+export async function alertAdminInfinityJobFailed(
+  supabase: SupabaseClient,
+  params: {
+    jobId: string;
+    tipo: string;
+    beneficiarioId: string;
+    error: string;
+    attempts: number;
+  }
+) {
+  const contacts = await resolveInfinityAdminContacts(supabase);
+  if (!contacts.admin_email && !contacts.admin_telefone) return;
+
+  const { data: ben } = await supabase
+    .from("beneficiarios")
+    .select("nome, cpf")
+    .eq("id", params.beneficiarioId)
+    .maybeSingle();
+
+  const nome = ben?.nome || "—";
+  const cpfTail = String(ben?.cpf || "").replace(/\D/g, "").slice(-4) || "????";
+  const tipoLabel =
+    params.tipo === "create_charge"
+      ? "criar cobrança Infinity"
+      : params.tipo === "cancel_subscription"
+        ? "cancelar/excluir Infinity"
+        : params.tipo;
+
+  await notifyAdminAlert(supabase, {
+    throttleKey: `infinity_job_failed:${params.jobId}`,
+    throttleOnce: true,
+    subject: `[Infinity] Falhou: ${tipoLabel} — ${nome}`,
+    text: [
+      "⚠️ Job Infinity falhou em definitivo.",
+      "",
+      `Tipo: ${tipoLabel}`,
+      `Cliente: ${nome}`,
+      `CPF (final): ${cpfTail}`,
+      `Job: ${params.jobId}`,
+      `Tentativas: ${params.attempts}`,
+      `Erro: ${params.error}`,
+      "",
+      params.tipo === "create_charge"
+        ? "O cliente NÃO teve fatura criada. Ele deve reaparecer no Financeiro para tentar de novo (ou criar manual na InfinitePay)."
+        : "Confira a extensão Infinity Bridge e a sessão em app.infinitepay.io.",
+      `Detectado em: ${new Date().toLocaleString("pt-BR")}`,
+    ].join("\n"),
+    logAction: "infinity_job_failed_admin_alert",
+    logPayload: {
+      jobId: params.jobId,
+      tipo: params.tipo,
+      beneficiarioId: params.beneficiarioId,
+      error: params.error.slice(0, 300),
+    },
+  });
+}
+
 /**
  * Alerta admin se extensão Infinity offline (cron).
  * Não exige jobs pendentes — avisa se ativa e offline.
