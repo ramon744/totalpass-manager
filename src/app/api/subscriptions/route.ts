@@ -105,10 +105,11 @@ export async function POST(request: NextRequest) {
 
     try {
       if (gateway === "infinity") {
-        // Não cria no Asaas nem notifica. Só marca gateway + fila dry-run.
+        // Marca gateway Infinity e enfileira create_charge (extensão cria cliente+fatura).
+        // Não toca no Asaas nem na fila WhatsApp daqui.
         const { data: ben, error: benErr } = await serviceClient
           .from("beneficiarios")
-          .select("id, perfil, gateway_pagamento, telefone, nome")
+          .select("id, perfil, gateway_pagamento, telefone, nome, email, cpf")
           .eq("id", cliente.id)
           .maybeSingle();
         if (benErr || !ben) {
@@ -139,6 +140,10 @@ export async function POST(request: NextRequest) {
             valor: clienteValor,
             descricao: clienteDescricao,
             dataVencimento: cliente.dataVencimento ?? null,
+            telefone: cliente.telefone || ben.telefone,
+            email: ben.email,
+            nome: cliente.nome || ben.nome,
+            cpf: ben.cpf,
             origem: "financeiro",
           },
           userId: user.id,

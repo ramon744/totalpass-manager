@@ -109,6 +109,99 @@ export async function markInfinityCancelledAfterSubscriptionCancel(
   };
 }
 
+/**
+ * Após create_charge real: grava infinity_customer_id / subscription slug
+ * no beneficiário (e snapshot leve em infinity_customer_status).
+ */
+export async function markInfinityCreatedAfterCharge(
+  supabase: SupabaseClient,
+  params: {
+    beneficiarioId?: string | null;
+    jobId?: string | null;
+    result?: Record<string, unknown> | null;
+  }
+) {
+  const beneficiarioId = params.beneficiarioId
+    ? String(params.beneficiarioId).trim()
+    : "";
+  if (!beneficiarioId) return { updated: false };
+
+  const result = params.result ?? {};
+  const customerId = String(
+    result.infinityCustomerId || result.infinity_customer_id || ""
+  ).trim();
+  const subscriptionSlug = String(
+    result.infinitySubscriptionSlug ||
+      result.infinity_subscription_slug ||
+      ""
+  ).trim();
+  const invoiceSlug = String(
+    result.invoiceSlug || result.invoice_slug || ""
+  ).trim();
+
+  if (!customerId && !subscriptionSlug) return { updated: false };
+
+  const now = new Date().toISOString();
+  const benPatch: Record<string, unknown> = { updated_at: now };
+  if (customerId) benPatch.infinity_customer_id = customerId;
+  if (subscriptionSlug) benPatch.infinity_subscription_slug = subscriptionSlug;
+
+  const { error: benErr } = await supabase
+    .from("beneficiarios")
+    .update(benPatch)
+    .eq("id", beneficiarioId);
+  if (benErr) throw new Error(benErr.message);
+
+  if (customerId) {
+    const statusPatch: Record<string, unknown> = {
+      infinity_customer_id: customerId,
+      beneficiario_id: beneficiarioId,
+      payment_status: "pending",
+      updated_at: now,
+      synced_at: now,
+    };
+    if (subscriptionSlug) {
+      statusPatch.infinity_subscription_slug = subscriptionSlug;
+    }
+    if (invoiceSlug) statusPatch.invoice_slug = invoiceSlug;
+
+    const { data: existing } = await supabase
+      .from("infinity_customer_status")
+      .select("id")
+      .eq("infinity_customer_id", customerId)
+      .maybeSingle();
+
+    if (existing?.id) {
+      await supabase
+        .from("infinity_customer_status")
+        .update(statusPatch)
+        .eq("id", existing.id);
+    } else {
+      await supabase.from("infinity_customer_status").insert({
+        ...statusPatch,
+        nome: null,
+        raw: params.result ?? {},
+        invoice_details: {},
+        created_at: now,
+      });
+    }
+  }
+
+  await createLog(supabase, {
+    acao: "infinity_status_apos_create_charge",
+    entidade: "beneficiarios",
+    entidade_id: beneficiarioId,
+    payload: {
+      job_id: params.jobId ?? null,
+      infinity_customer_id: customerId || null,
+      infinity_subscription_slug: subscriptionSlug || null,
+      invoice_slug: invoiceSlug || null,
+    },
+  });
+
+  return { updated: true };
+}
+
 export async function countInfinityJobsToday(
   supabase: SupabaseClient
 ): Promise<number> {
@@ -149,7 +242,7 @@ export async function enqueueInfinityJob(
   const { data: ben, error: benErr } = await supabase
     .from("beneficiarios")
     .select(
-      "id, nome, cpf, perfil, gateway_pagamento, infinity_customer_id, infinity_subscription_slug"
+      "id, nome, cpf, telefone, email, perfil, gateway_pagamento, infinity_customer_id, infinity_subscription_slug"
     )
     .eq("id", params.beneficiarioId)
     .maybeSingle();
@@ -230,6 +323,8 @@ export async function enqueueInfinityJob(
         payload: {
           nome: ben.nome,
           cpf: ben.cpf,
+          telefone: ben.telefone,
+          email: ben.email,
           ...(params.payload ?? {}),
         },
         idempotency_key: idempotencyKey,
@@ -356,6 +451,15 @@ export async function reportInfinityJobResult(
         infinityCustomerId: job.infinity_customer_id,
         beneficiarioId: job.beneficiario_id,
         jobId: job.id,
+      });
+    }
+
+    // Após create_charge real: grava customer_id + slug no beneficiário.
+    if (job.tipo === "create_charge" && job.dry_run === false) {
+      await markInfinityCreatedAfterCharge(supabase, {
+        beneficiarioId: job.beneficiario_id,
+        jobId: job.id,
+        result: params.result ?? null,
       });
     }
 

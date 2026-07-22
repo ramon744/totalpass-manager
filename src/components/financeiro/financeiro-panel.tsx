@@ -320,7 +320,7 @@ export function FinanceiroPanel({
         ).length;
         const parts = [];
         if (asaasN) parts.push(`${asaasN} Asaas`);
-        if (infN) parts.push(`${infN} Infinity (fila dry-run)`);
+        if (infN) parts.push(`${infN} Infinity (fila create_charge)`);
         toast.success(
           parts.length
             ? `Criado: ${parts.join(" · ")}`
@@ -480,8 +480,9 @@ export function FinanceiroPanel({
               Escolha o <strong>gateway</strong> de cada cliente (Asaas ou
               Infinity). O sistema sugere conforme o cadastro/sync.{" "}
               <strong>Asaas</strong> cria assinatura e pode enfileirar WhatsApp.{" "}
-              <strong>Infinity</strong> só enfileira job (dry-run) — não cria no
-              Asaas nem notifica de novo. Valor/descrição vêm do provedor; o
+              <strong>Infinity</strong> enfileira job real (extensão cria cliente +
+              fatura recorrente na InfinitePay) — não cria no Asaas nem notifica
+              WhatsApp por este fluxo. Valor/descrição vêm do provedor; o
               vencimento fica em branco até você preencher.
               {sugestoesPendentes > 0 && (
                 <span className="mt-1 block font-medium text-emerald-700 dark:text-emerald-300">
@@ -623,7 +624,7 @@ export function FinanceiroPanel({
                             ? "InfinitePay (já no sync/cadastro)"
                             : "Asaas"}
                           {c.gateway === "infinity"
-                            ? " · fila dry-run, sem notificar Asaas"
+                            ? " · fila create_charge, sem Asaas/WhatsApp"
                             : ""}
                         </p>
                       </div>
